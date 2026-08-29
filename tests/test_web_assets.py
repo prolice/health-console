@@ -57,9 +57,12 @@ class TestIndex(unittest.TestCase):
     def test_tabs_are_associated_with_their_panels(self):
         # role="tab" inside role="tablist" is not enough on its own: a
         # screen reader needs aria-controls/aria-labelledby to link each
-        # tab to the panel it toggles.
+        # tab to the panel it toggles. The association is bidirectional
+        # or it is not an association: both directions are asserted.
         self.assertIn('aria-controls="simple"', self.html)
         self.assertIn('aria-controls="expert"', self.html)
+        self.assertIn('aria-labelledby="mode-simple"', self.html)
+        self.assertIn('aria-labelledby="mode-expert"', self.html)
         self.assertEqual(self.html.count('role="tabpanel"'), 2)
 
 
@@ -116,6 +119,18 @@ class TestApp(unittest.TestCase):
 
     def test_missing_key_falls_back_rather_than_showing_the_key(self):
         self.assertIn("FALLBACK_LOCALE", self.js)
+
+    def test_freshness_stale_flag_is_not_hardcoded(self):
+        # The original defect was markFreshness(state.ts * 1000, false) — a
+        # literal false that a locale switch mid-outage silently repainted
+        # as "up to date". Guard against regressing to any hardcoded
+        # boolean argument.
+        self.assertIn("let isStale", self.js)
+        self.assertNotRegex(
+            self.js, r"markFreshness\([^)]*\bfalse\b[^)]*\)",
+            "markFreshness is called with a hardcoded false")
+        self.assertIn("isStale = true", self.js)
+        self.assertIn("isStale = false", self.js)
 
     def test_catalogue_fetch_is_defensive(self):
         # A missing or broken catalogue file must not silently blank the

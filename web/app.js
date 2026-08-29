@@ -14,6 +14,7 @@ let timeFormat = new Intl.DateTimeFormat(locale,
 let lastState = null;
 let lastUpdate = Date.now();
 let isStale = false;
+let interfaceTextUnavailable = false;
 
 function el(id) { return document.getElementById(id); }
 
@@ -152,6 +153,13 @@ function markFreshness(stale) {
   // While stale, the banner must keep showing the last real update time,
   // never the timestamp of whatever just got (re)painted — a locale
   // switch during an outage must repaint the stale message, not erase it.
+  if (interfaceTextUnavailable) {
+    // The catalogue never loaded, so translate() has nothing to return
+    // but "". If the SSE stream still comes up despite that (a plausible
+    // split: static assets down, the API up), a state event must not
+    // silently blank out the one visible sign that something is wrong.
+    return;
+  }
   const zone = el("freshness");
   const milliseconds = stale ? lastUpdate : lastState.ts * 1000;
   const time = timeFormat.format(new Date(milliseconds));
@@ -210,6 +218,7 @@ async function start() {
     // viewer would see a blank page with no sign anything is wrong. Do
     // not "fix" this back to a translate() call.
     console.warn("catalogue unavailable, interface text cannot be shown", error);
+    interfaceTextUnavailable = true;
     el("freshness").textContent =
       "Interface text failed to load. Please reload the page.";
   }

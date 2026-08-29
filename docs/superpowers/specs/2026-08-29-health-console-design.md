@@ -575,6 +575,12 @@ data, and translating them would make problem reports harder to compare.
   access, compared in **constant time** (`hmac.compare_digest`).
 - The token lives in the browser's `localStorage`, **never in a URL** that could be
   pasted into a chat or land in a history file.
+- A `?k=<token>` query parameter is also accepted, for the one case `localStorage`
+  cannot cover: a phone opening a bookmarked or shared link, with no way to set a
+  header on plain navigation. This is a deliberate residual exposure — it persists
+  in browser history and in any intermediary's logs (LAN router, proxy, connection
+  tracking) beyond what this process's own access-log suppression and
+  `Referrer-Policy: no-referrer` can reach.
 - Actions refused off-loopback unless `allow_remote_actions = true`.
 - Closed catalogue, fixed `argv`, `shell=False`, no interpolation.
 - `sudoers.d` limited to the named binaries with their arguments.

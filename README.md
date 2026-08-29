@@ -77,6 +77,10 @@ deploying it anywhere else.
 - **It listens on the local network**, protected by a token. Actions are **refused
   outside `127.0.0.1`** unless explicitly enabled in configuration: reading and acting
   do not carry the same cost when you get it wrong.
+- **The token can also be passed as `?k=` in the URL**, so a phone can open a
+  bookmarked or shared link. That is a deliberate trade-off: unlike the header path,
+  it persists in browser history and in any intermediary's logs (LAN router, proxy,
+  connection tracking).
 - **It is not designed to face the Internet.** Do not put it there.
 - Every action is logged with its timestamp, source, exit code and full output.
 

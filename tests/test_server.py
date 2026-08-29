@@ -112,6 +112,24 @@ class TestHttp(unittest.TestCase):
         payload = json.loads(ctx.exception.read())
         self.assertIn("error", payload)
         self.assertIn("detail", payload)
+        self.assertNotIn(" ", payload["error"])
+        self.assertEqual(payload["error"], payload["error"].lower())
+        if payload["detail"]:
+            self.assertNotIn(" ", payload["detail"])
+
+    def test_unsupported_method_still_gets_security_headers_and_json(self):
+        # The base class handles unknown verbs itself, before our routing
+        # ever runs -- that path must not bypass the security headers or
+        # fall back to an HTML body.
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.code, 501)
+        self.assertIn("default-src 'self'",
+                      ctx.exception.headers["Content-Security-Policy"])
+        payload = json.loads(ctx.exception.read())
+        self.assertIn("error", payload)
 
 
 if __name__ == "__main__":

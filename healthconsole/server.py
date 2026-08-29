@@ -34,6 +34,15 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 
+# Status codes the base class can raise itself (an unsupported HTTP verb, a
+# malformed request line) before our own routing ever runs. Mapped to a
+# machine-readable code so those responses stay code-shaped like every other
+# error body, instead of falling back to the base class's HTML page.
+FALLBACK_ERROR_CODES = {
+    400: "bad_request",
+    501: "not_implemented",
+}
+
 
 def is_loopback(addr: str) -> bool:
     try:
@@ -84,7 +93,25 @@ def make_server(cfg: Config, scheduler,
             # localises from its catalogue.
             self._json(code, {"error": error, "detail": detail})
 
+        def send_error(self, code, message=None, explain=None):
+            # The base class calls this directly for errors it detects
+            # itself (an unsupported HTTP verb, a malformed request line)
+            # before our own do_GET ever runs. Without this override those
+            # responses would carry the base class's HTML body and none of
+            # our security headers -- "security headers on every response"
+            # would not hold.
+            self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"))
+
         def _authorised(self, query) -> bool:
+            # Preferred: the X-Health-Token header. Fallback: ?k=<token>,
+            # which exists only so a phone opening a shared or bookmarked
+            # link can authenticate -- plain navigation has no way to set a
+            # header. This is a deliberate trade-off: log_message() above
+            # keeps the token out of this process's own access log, and
+            # Referrer-Policy: no-referrer keeps it out of cross-navigation
+            # Referer headers, but neither reaches browser history,
+            # bookmarks, or an intermediary's own logs (LAN router, proxy,
+            # connection tracking).
             presented = (self.headers.get("X-Health-Token")
                          or query.get("k", [None])[0])
             return authorise(self.client_address[0], presented, cfg)
@@ -93,7 +120,7 @@ def make_server(cfg: Config, scheduler,
             target = (web_dir / relative).resolve()
             try:
                 target.relative_to(web_dir.resolve())
-            except ValueError:
+            except (ValueError, OSError):
                 return self._error(403, "path_refused", relative)
             if not target.is_file():
                 return self._error(404, "file_not_found", relative)
@@ -107,8 +134,7 @@ def make_server(cfg: Config, scheduler,
             query = parse_qs(parsed.query)
 
             if not self._authorised(query):
-                return self._error(401, "token_required",
-                                   "non-loopback access requires a token")
+                return self._error(401, "token_required", "")
 
             if parsed.path == "/":
                 return self._serve_file("index.html")

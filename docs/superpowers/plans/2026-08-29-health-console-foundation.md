@@ -3133,6 +3133,7 @@ File `tests/test_server.py`:
 
 ```python
 import json
+import socket
 import threading
 import unittest
 import urllib.error
@@ -3265,6 +3266,35 @@ class TestHttp(unittest.TestCase):
         payload = json.loads(ctx.exception.read())
         self.assertIn("error", payload)
 
+    def test_error_response_carries_connection_close(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.headers["Connection"], "close")
+
+    def test_head_request_sends_headers_but_no_body(self):
+        # http.client and urllib both hide a missing HEAD-body guard --
+        # their HEAD-aware readers stop at the headers regardless of what
+        # is actually on the wire. A raw socket is the only way to see it.
+        with socket.create_connection(
+                ("127.0.0.1", self.port), timeout=5) as sock:
+            sock.settimeout(2)
+            sock.sendall(b"HEAD /api/now HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            chunks = []
+            try:
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            except socket.timeout:
+                pass
+        raw = b"".join(chunks)
+        headers, _, body = raw.partition(b"\r\n\r\n")
+        self.assertIn(b"Content-Length", headers)
+        self.assertEqual(body, b"")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -3355,23 +3385,32 @@ def make_server(cfg: Config, scheduler,
             pass
 
         # --- helpers ----------------------------------------------
-        def _send(self, code: int, body: bytes, content_type: str):
+        def _send(self, code: int, body: bytes, content_type: str,
+                  extra_headers: dict[str, str] | None = None):
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             for name, value in SECURITY_HEADERS.items():
                 self.send_header(name, value)
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(body)
+            # RFC 9110 SS9.3.2: a HEAD response carries the header fields
+            # the equivalent GET would have returned -- Content-Length
+            # included -- but never a body, so only the write is skipped.
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
-        def _json(self, code: int, payload: dict):
+        def _json(self, code: int, payload: dict,
+                  extra_headers: dict[str, str] | None = None):
             self._send(code, json.dumps(payload).encode("utf-8"),
-                       "application/json; charset=utf-8")
+                       "application/json; charset=utf-8", extra_headers)
 
-        def _error(self, code: int, error: str, detail: str = ""):
+        def _error(self, code: int, error: str, detail: str = "",
+                   extra_headers: dict[str, str] | None = None):
             # Machine-readable codes, never user-facing prose: the browser
             # localises from its catalogue.
-            self._json(code, {"error": error, "detail": detail})
+            self._json(code, {"error": error, "detail": detail}, extra_headers)
 
         def send_error(self, code, message=None, explain=None):
             # The base class calls this directly for errors it detects
@@ -3380,7 +3419,17 @@ def make_server(cfg: Config, scheduler,
             # responses would carry the base class's HTML body and none of
             # our security headers -- "security headers on every response"
             # would not hold.
-            self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"))
+            #
+            # Connection: close is sent only here, not from _send: the
+            # base class's own send_error always sends it, and
+            # send_header('Connection', 'close') has the side effect of
+            # forcing close_connection = True -- a safety net for the
+            # narrow cases where parse_request() left close_connection
+            # False before an error fired (an overlong HTTP/1.1 request
+            # line, or an HTTP/2.0 request line). A normal 200 response
+            # must not carry this, so it stays out of _send.
+            self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"),
+                       "", {"Connection": "close"})
 
         def _authorised(self, query) -> bool:
             # Preferred: the X-Health-Token header. Fallback: ?k=<token>,

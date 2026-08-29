@@ -75,23 +75,32 @@ def make_server(cfg: Config, scheduler,
             pass
 
         # --- helpers ----------------------------------------------
-        def _send(self, code: int, body: bytes, content_type: str):
+        def _send(self, code: int, body: bytes, content_type: str,
+                  extra_headers: dict[str, str] | None = None):
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             for name, value in SECURITY_HEADERS.items():
                 self.send_header(name, value)
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(body)
+            # RFC 9110 SS9.3.2: a HEAD response carries the header fields
+            # the equivalent GET would have returned -- Content-Length
+            # included -- but never a body, so only the write is skipped.
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
-        def _json(self, code: int, payload: dict):
+        def _json(self, code: int, payload: dict,
+                  extra_headers: dict[str, str] | None = None):
             self._send(code, json.dumps(payload).encode("utf-8"),
-                       "application/json; charset=utf-8")
+                       "application/json; charset=utf-8", extra_headers)
 
-        def _error(self, code: int, error: str, detail: str = ""):
+        def _error(self, code: int, error: str, detail: str = "",
+                   extra_headers: dict[str, str] | None = None):
             # Machine-readable codes, never user-facing prose: the browser
             # localises from its catalogue.
-            self._json(code, {"error": error, "detail": detail})
+            self._json(code, {"error": error, "detail": detail}, extra_headers)
 
         def send_error(self, code, message=None, explain=None):
             # The base class calls this directly for errors it detects
@@ -100,7 +109,17 @@ def make_server(cfg: Config, scheduler,
             # responses would carry the base class's HTML body and none of
             # our security headers -- "security headers on every response"
             # would not hold.
-            self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"))
+            #
+            # Connection: close is sent only here, not from _send: the
+            # base class's own send_error always sends it, and
+            # send_header('Connection', 'close') has the side effect of
+            # forcing close_connection = True -- a safety net for the
+            # narrow cases where parse_request() left close_connection
+            # False before an error fired (an overlong HTTP/1.1 request
+            # line, or an HTTP/2.0 request line). A normal 200 response
+            # must not carry this, so it stays out of _send.
+            self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"),
+                       "", {"Connection": "close"})
 
         def _authorised(self, query) -> bool:
             # Preferred: the X-Health-Token header. Fallback: ?k=<token>,

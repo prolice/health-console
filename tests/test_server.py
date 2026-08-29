@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import unittest
 import urllib.error
@@ -130,6 +131,35 @@ class TestHttp(unittest.TestCase):
                       ctx.exception.headers["Content-Security-Policy"])
         payload = json.loads(ctx.exception.read())
         self.assertIn("error", payload)
+
+    def test_error_response_carries_connection_close(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.headers["Connection"], "close")
+
+    def test_head_request_sends_headers_but_no_body(self):
+        # http.client and urllib both hide a missing HEAD-body guard --
+        # their HEAD-aware readers stop at the headers regardless of what
+        # is actually on the wire. A raw socket is the only way to see it.
+        with socket.create_connection(
+                ("127.0.0.1", self.port), timeout=5) as sock:
+            sock.settimeout(2)
+            sock.sendall(b"HEAD /api/now HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            chunks = []
+            try:
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            except socket.timeout:
+                pass
+        raw = b"".join(chunks)
+        headers, _, body = raw.partition(b"\r\n\r\n")
+        self.assertIn(b"Content-Length", headers)
+        self.assertEqual(body, b"")
 
 
 if __name__ == "__main__":

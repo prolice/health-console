@@ -14,8 +14,9 @@ from types import ModuleType
 FAST = "fast"
 SLOW = "slow"
 
+# Later tasks extend this tuple as they add probe modules.
 PROBE_MODULES: tuple[str, ...] = (
-    "cpu", "memory", "thermal", "network", "battery",
+    "cpu", "memory",
 )
 
 
@@ -35,12 +36,9 @@ class EvalContext:
 def load_probes(cadence: str | None = None) -> list[ModuleType]:
     modules = []
     for name in PROBE_MODULES:
-        try:
-            module = importlib.import_module(f"healthconsole.probes.{name}")
-            if cadence is None or module.CADENCE == cadence:
-                modules.append(module)
-        except ModuleNotFoundError:
-            pass
+        module = importlib.import_module(f"healthconsole.probes.{name}")
+        if cadence is None or module.CADENCE == cadence:
+            modules.append(module)
     return modules
 
 

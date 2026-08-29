@@ -1922,8 +1922,9 @@ from types import ModuleType
 FAST = "fast"
 SLOW = "slow"
 
+# Later tasks extend this tuple as they add probe modules.
 PROBE_MODULES: tuple[str, ...] = (
-    "cpu", "memory", "thermal", "network", "battery",
+    "cpu", "memory",
 )
 
 
@@ -2118,12 +2119,13 @@ Linux behaving normally, the cache filling whatever is unused."
 ### Task 9: Thermal, network and battery probes
 
 **Files:**
+- Modify: `healthconsole/probes/__init__.py`
 - Create: `healthconsole/probes/thermal.py`, `healthconsole/probes/network.py`, `healthconsole/probes/battery.py`
 - Create: `tests/test_probes_thermal.py`, `tests/test_probes_network.py`, `tests/test_probes_battery.py`
 
 **Interfaces:**
 - Consumes: `probes.EvalContext`, `plausibility.sane`, `plausibility.battery_capacity_is_coherent`
-- Produces: three modules honouring the Task 8 contract, plus `network.rates(previous: dict, current: dict, dt: float) -> dict[str, float]` (pure) and `battery.wear_pct(full: float, design: float) -> float | None`
+- Produces: three modules honouring the Task 8 contract, plus `network.rates(previous: dict, current: dict, dt: float) -> dict[str, float]` (pure) and `battery.wear_pct(full: float, design: float) -> float | None`. Extends `PROBE_MODULES` in `probes/__init__.py` to include all five probes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2597,15 +2599,26 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
         detail=f"wear={wear:.1f}% · {sample.get('raw')}")]
 ```
 
-- [ ] **Step 6: Run the tests to confirm they pass**
+- [ ] **Step 6: Extend the probe registry**
+
+In `healthconsole/probes/__init__.py`, change `PROBE_MODULES` to include all five probes:
+
+```python
+# Later tasks extend this tuple as they add probe modules.
+PROBE_MODULES: tuple[str, ...] = (
+    "cpu", "memory", "thermal", "network", "battery",
+)
+```
+
+- [ ] **Step 7: Run the tests to confirm they pass**
 
 Run: `./run-tests -v`
 Expected: PASS — the whole suite is green
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add healthconsole/probes tests/test_probes_thermal.py tests/test_probes_network.py tests/test_probes_battery.py
+git add healthconsole/probes/__init__.py healthconsole/probes tests/test_probes_thermal.py tests/test_probes_network.py tests/test_probes_battery.py
 git commit -m "Add the thermal, network and battery probes
 
 The battery probe reads either energy_* or charge_*, and refuses

@@ -14,12 +14,14 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
+
 from healthconsole.config import (
     DEFAULT_CONFIG_PATH, ConfigError, estimate_db_bytes, load_config,
 )
 from healthconsole.ring import Ring
 from healthconsole.scheduler import Scheduler
-from healthconsole.server import WEB_DIR, generate_token, make_server
+from healthconsole.server import WEB_DIR, generate_token, is_loopback, make_server
 from healthconsole.store import Store
 
 DATA_DIR = Path.home() / ".local" / "share" / "health-console"
@@ -164,6 +166,21 @@ def cmd_token(cfg, config_path: Path, rotate: bool) -> int:
     return 0
 
 
+def _lan_address() -> str | None:
+    """The machine's own first up, non-loopback IPv4 address, if any --
+    "http://0.0.0.0:8787" is not a URL anyone's phone can open; this is."""
+    stats = psutil.net_if_stats()
+    for name, addresses in psutil.net_if_addrs().items():
+        interface = stats.get(name)
+        if interface is None or not interface.isup:
+            continue
+        for address in addresses:
+            if (address.family.name == "AF_INET"
+                    and not address.address.startswith("127.")):
+                return address.address
+    return None
+
+
 def _log_loop_error(exc: Exception) -> None:
     print(f"scheduler loop error: {type(exc).__name__}: {exc}",
           file=sys.stderr)
@@ -223,7 +240,16 @@ def cmd_run(cfg) -> int:
 
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
-    print(f"Health Console on http://{cfg.bind}:{cfg.port}")
+    # cfg.bind is frequently a wildcard address ("0.0.0.0", "::") that no
+    # browser can actually open: always show the loopback URL, which
+    # always works, and only add the machine's real LAN address (not
+    # cfg.bind itself) as a second line when it is listening beyond
+    # loopback.
+    print(f"Health Console on http://127.0.0.1:{cfg.port}")
+    if not is_loopback(cfg.bind):
+        lan_address = _lan_address()
+        if lan_address:
+            print(f"Also reachable on the LAN at http://{lan_address}:{cfg.port}")
     print("Ctrl+C to stop.")
     try:
         server.serve_forever()

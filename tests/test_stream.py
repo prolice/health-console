@@ -27,6 +27,11 @@ class HttpCase(unittest.TestCase):
         cls.now = int(time.time())
         cls.store.write_metrics(cls.now - 3600, [("cpu.usage", 20.0, 10.0, 30.0)])
         cls.store.write_metrics(cls.now - 1800, [("cpu.usage", 40.0, 30.0, 50.0)])
+        # Deliberately much older than cpu.usage's own history, and never
+        # requested by the per-metric depth tests below: proves depth_days
+        # is scoped to the metric actually asked for, not the table's
+        # oldest row overall.
+        cls.store.write_metrics(cls.now - 90_000, [("mem.available", 1.0, 1.0, 1.0)])
         # Fold the raw rows into the 5-minute aggregate table too, so a
         # long-range request (which reads metric_5m) has data to find.
         cls.store.aggregate_5m(cls.now)
@@ -90,6 +95,22 @@ class TestHistory(HttpCase):
             self.url("/api/history?metric=cpu.usage&range=90d"),
             timeout=5).read())
         self.assertIn("depth_days", body)
+
+    def test_depth_is_scoped_to_the_requested_metric(self):
+        # mem.available's fixture row is 90,000s old; cpu.usage's oldest is
+        # 3,600s old. Depth must reflect cpu.usage's own history, not
+        # mem.available's much older one, or a collection failure would be
+        # falsely implied for a metric that has simply just begun.
+        body = json.loads(urllib.request.urlopen(
+            self.url("/api/history?metric=cpu.usage&range=24h"),
+            timeout=5).read())
+        self.assertLess(body["depth_days"], 90_000 / 86_400)
+
+    def test_unknown_metric_reports_zero_depth_not_another_metrics(self):
+        body = json.loads(urllib.request.urlopen(
+            self.url("/api/history?metric=nonexistent&range=24h"),
+            timeout=5).read())
+        self.assertEqual(body["depth_days"], 0.0)
 
 
 class TestStream(HttpCase):

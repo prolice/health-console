@@ -89,10 +89,14 @@ class TestApp(unittest.TestCase):
                         "60 KiB budget exceeded")
 
     def test_default_locale_is_english(self):
-        self.assertIn('"en"', self.js)
+        # Pinned to the actual declaration: '"en"' alone matches any of
+        # AVAILABLE_LOCALES, the locale <option value="en">, or plenty of
+        # other unrelated strings, so this passed regardless of what
+        # FALLBACK_LOCALE was actually set to.
+        self.assertIn('FALLBACK_LOCALE = "en"', self.js)
 
     def test_default_mode_is_simple(self):
-        self.assertIn('"simple"', self.js)
+        self.assertIn('DEFAULT_MODE = "simple"', self.js)
 
     def test_no_user_facing_string_is_hard_coded(self):
         # Every sentence the user reads must come from a catalogue. If any

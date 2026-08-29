@@ -97,6 +97,32 @@ class TestIntrospection(StoreCase):
         self.assertEqual(self.store.oldest_ts("metric"), 100)
 
 
+class TestPerMetricDepth(StoreCase):
+    """available_depth_seconds() was per-table, not per-metric: a request
+    for a metric with no rows of its own reported whatever OTHER metric
+    happened to be oldest, contradicting the rule that history states the
+    depth actually stored for what was asked."""
+
+    def test_depth_is_scoped_to_the_requested_metric(self):
+        self.store.write_metrics(100, [("old.metric", 1.0, 1.0, 1.0)])
+        self.store.write_metrics(900, [("cpu.usage", 1.0, 1.0, 1.0)])
+        self.assertEqual(self.store.available_depth_seconds(
+            "metric", 1000, metric="cpu.usage"), 100)
+        self.assertEqual(self.store.available_depth_seconds(
+            "metric", 1000, metric="old.metric"), 900)
+
+    def test_omitting_metric_keeps_the_whole_table_behaviour(self):
+        self.store.write_metrics(100, [("old.metric", 1.0, 1.0, 1.0)])
+        self.store.write_metrics(900, [("cpu.usage", 1.0, 1.0, 1.0)])
+        self.assertEqual(
+            self.store.available_depth_seconds("metric", 1000), 900)
+
+    def test_unknown_metric_reports_zero_not_another_metrics_depth(self):
+        self.store.write_metrics(100, [("cpu.usage", 1.0, 1.0, 1.0)])
+        self.assertEqual(self.store.available_depth_seconds(
+            "metric", 1000, metric="nonexistent"), 0)
+
+
 class TestCorruptDatabase(unittest.TestCase):
     """Spec §13: 'Database corrupt -> recreated, incident logged'. A laptop
     losing power mid-write is the ordinary case this guards, not an edge

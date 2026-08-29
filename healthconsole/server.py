@@ -59,9 +59,18 @@ SESSION_COOKIE_NAME = "health_token"
 
 def is_loopback(addr: str) -> bool:
     try:
-        return ipaddress.ip_address(addr).is_loopback
+        address = ipaddress.ip_address(addr)
     except ValueError:
         return False
+    # With bind = "::", an IPv4 client connecting to the machine itself
+    # arrives IPv4-mapped (::ffff:127.0.0.1), which IPv6Address.is_loopback
+    # does not recognise as loopback on its own. Unwrap it first, or that
+    # client is refused as if it were remote -- with no `token` command to
+    # get in some other way until this same review wave added one.
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        address = mapped
+    return address.is_loopback
 
 
 def generate_token() -> str:
@@ -221,7 +230,8 @@ def make_server(cfg: Config, scheduler,
             table = ("metric" if RANGES[window] <= RAW_TABLE_MAX_SECONDS
                      else "metric_5m")
             points = scheduler.store.read_series(metric, since, now, table=table)
-            depth = scheduler.store.available_depth_seconds(table, now)
+            depth = scheduler.store.available_depth_seconds(
+                table, now, metric=metric)
             return self._json(200, {
                 "metric": metric, "range": window, "table": table,
                 "points": [[ts, value] for ts, value in points],

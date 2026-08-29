@@ -32,6 +32,17 @@ class TestLoopback(unittest.TestCase):
     def test_garbage_is_not_loopback(self):
         self.assertFalse(is_loopback("not-an-address"))
 
+    def test_ipv4_mapped_loopback_is_loopback(self):
+        # With bind = "::", an IPv4 client connecting to the machine itself
+        # arrives as ::ffff:127.0.0.1. Without unwrapping it, that client
+        # would be refused as if it came from off-machine -- and, before
+        # this review wave added a `token` command, would have had no way
+        # in at all.
+        self.assertTrue(is_loopback("::ffff:127.0.0.1"))
+
+    def test_ipv4_mapped_lan_address_is_not_loopback(self):
+        self.assertFalse(is_loopback("::ffff:192.168.0.3"))
+
 
 class TestAuthorise(unittest.TestCase):
     def setUp(self):

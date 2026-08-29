@@ -4,8 +4,49 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
+from unittest import mock
 
-from healthconsole.cli import SECONDS_PER_DAY, _tick_once, human_bytes, main
+from healthconsole.cli import (
+    SECONDS_PER_DAY, _lan_address, _tick_once, human_bytes, main,
+)
+
+
+def _if_addr(family_name, address):
+    return SimpleNamespace(
+        family=SimpleNamespace(name=family_name), address=address)
+
+
+class TestLanAddress(unittest.TestCase):
+    """cli.py used to print http://0.0.0.0:8787 when bind was a wildcard --
+    not a URL any phone can open. _lan_address() finds a real one."""
+
+    def test_finds_the_first_up_non_loopback_ipv4_address(self):
+        addrs = {
+            "lo": [_if_addr("AF_INET", "127.0.0.1")],
+            "enp0s25": [_if_addr("AF_INET6", "fe80::1"),
+                       _if_addr("AF_INET", "192.168.0.3")],
+        }
+        stats = {
+            "lo": SimpleNamespace(isup=True),
+            "enp0s25": SimpleNamespace(isup=True),
+        }
+        with mock.patch("psutil.net_if_addrs", return_value=addrs), \
+             mock.patch("psutil.net_if_stats", return_value=stats):
+            self.assertEqual(_lan_address(), "192.168.0.3")
+
+    def test_a_down_interface_is_skipped(self):
+        addrs = {"enp0s25": [_if_addr("AF_INET", "192.168.0.3")]}
+        stats = {"enp0s25": SimpleNamespace(isup=False)}
+        with mock.patch("psutil.net_if_addrs", return_value=addrs), \
+             mock.patch("psutil.net_if_stats", return_value=stats):
+            self.assertIsNone(_lan_address())
+
+    def test_loopback_only_yields_no_address(self):
+        addrs = {"lo": [_if_addr("AF_INET", "127.0.0.1")]}
+        stats = {"lo": SimpleNamespace(isup=True)}
+        with mock.patch("psutil.net_if_addrs", return_value=addrs), \
+             mock.patch("psutil.net_if_stats", return_value=stats):
+            self.assertIsNone(_lan_address())
 
 
 class TestHumanBytes(unittest.TestCase):

@@ -141,10 +141,16 @@ class Store:
         return int(self.conn.execute(
             "SELECT COUNT(DISTINCT key_id) FROM metric").fetchone()[0])
 
-    def oldest_ts(self, table: str) -> int | None:
+    def oldest_ts(self, table: str, metric: str | None = None) -> int | None:
         if table not in METRIC_TABLES:
             raise ValueError(f"unknown table: {table}")
-        row = self.conn.execute(f"SELECT MIN(ts) FROM {table}").fetchone()
+        if metric is None:
+            row = self.conn.execute(f"SELECT MIN(ts) FROM {table}").fetchone()
+        else:
+            row = self.conn.execute(
+                f"SELECT MIN(ts) FROM {table} "
+                "WHERE key_id = (SELECT id FROM metric_key WHERE key = ?)",
+                (metric,)).fetchone()
         return None if row[0] is None else int(row[0])
 
     def db_bytes(self) -> int:
@@ -214,8 +220,15 @@ class Store:
         self.conn.commit()
         return deleted
 
-    def available_depth_seconds(self, table: str, now: int) -> int:
-        oldest = self.oldest_ts(table)
+    def available_depth_seconds(self, table: str, now: int,
+                                metric: str | None = None) -> int:
+        # Without `metric`, this is per-table, not per-metric: a request for
+        # a metric this table has never stored a point for would otherwise
+        # report the depth of whatever OTHER metric happens to be oldest --
+        # contradicting the rule that history states the depth actually
+        # stored for what was asked. `metric=None` keeps the original,
+        # whole-table behaviour the scheduler's own housekeeping call uses.
+        oldest = self.oldest_ts(table, metric)
         return 0 if oldest is None else max(0, now - oldest)
 
     def vacuum(self) -> None:

@@ -1,4 +1,7 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from healthconsole.findings import Severity
 from healthconsole.probes import EvalContext
@@ -68,22 +71,40 @@ class TestEvaluate(unittest.TestCase):
             {"status": "unavailable", "reason": "no battery"}, context()), [])
 
 
+def fake_battery(tmp_dir, *, now, full, design, state="Full"):
+    """A fake /sys/class/power_supply/BAT0 tree, so collect()'s own
+    clamping arithmetic runs against real (monkeypatched) sysfs reads
+    instead of a value the test computed itself."""
+    battery_dir = Path(tmp_dir) / "BAT0"
+    battery_dir.mkdir()
+    (battery_dir / "type").write_text("Battery", encoding="utf-8")
+    (battery_dir / "charge_now").write_text(str(now), encoding="utf-8")
+    (battery_dir / "charge_full").write_text(str(full), encoding="utf-8")
+    (battery_dir / "charge_full_design").write_text(
+        str(design), encoding="utf-8")
+    (battery_dir / "status").write_text(state, encoding="utf-8")
+    return battery_dir
+
+
 class TestOvercharge(unittest.TestCase):
-    def test_slight_overcharge_is_clamped_not_dropped(self):
+    def test_collect_clamps_slight_overcharge_instead_of_dropping_it(self):
         # The driver may report charge slightly above full right after a
-        # complete charge. battery_capacity_is_coherent tolerates up to 105%.
-        # But a battery cannot be more than fully charged; clamping keeps the
-        # value in the percent domain instead of having it silently dropped
-        # downstream by sane().
-        sample = {
-            "status": "ok", "present": True, "state": "Full",
-            "charge_pct": min(100.0, 1100 / 1050 * 100.0),  # 104.76 -> 100.0
-            "wear_pct": 0.0,
-            "raw": {"charge_now": 1100, "charge_full": 1050,
-                    "charge_full_design": 1000},
-        }
+        # complete charge. battery_capacity_is_coherent tolerates up to
+        # 105%. But a battery cannot be more than fully charged: collect()
+        # clamps to keep the value in the percent domain, rather than
+        # having it silently dropped downstream by sane(). Exercised
+        # against collect() itself, not a value the test pre-computed --
+        # the earlier version of this test hand-computed
+        # min(100.0, 1100/1050*100.0) in its own fixture and asserted only
+        # that metrics() passed the already-clamped number through, so the
+        # clamp in collect() was never actually run.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_battery(tmp, now=1100, full=1050, design=1000)
+            with mock.patch.object(battery, "POWER_SUPPLY", Path(tmp)):
+                sample = battery.collect()
+        self.assertEqual(sample["status"], "ok")
+        self.assertEqual(sample["charge_pct"], 100.0)
         metrics = battery.metrics(sample)
-        self.assertIn("battery.charge_pct", metrics)
         self.assertEqual(metrics["battery.charge_pct"], 100.0)
 
 

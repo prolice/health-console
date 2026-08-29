@@ -121,3 +121,64 @@ class Store:
             Path(self.path + suffix).stat().st_size
             for suffix in ("", "-wal", "-shm")
             if Path(self.path + suffix).exists())
+
+    # --- Aggregation and retention ------------------------------------
+
+    def aggregate_5m(self, now: int, period: int = 300) -> int:
+        """Fold raw points into buckets of `period` seconds.
+
+        Idempotent: a bucket already written is not written again. Only fully
+        elapsed buckets are processed, so no partial average is frozen in.
+        """
+        boundary = (now // period) * period
+        rows = self.conn.execute(
+            "SELECT (ts / ?) * ? AS bucket, key_id, AVG(avg), MIN(min), MAX(max) "
+            "FROM metric WHERE ts < ? GROUP BY bucket, key_id",
+            (period, period, boundary)).fetchall()
+        written = 0
+        for bucket, key_id, avg, low, high in rows:
+            exists = self.conn.execute(
+                "SELECT 1 FROM metric_5m WHERE ts = ? AND key_id = ?",
+                (bucket, key_id)).fetchone()
+            if exists:
+                continue
+            self.conn.execute(
+                "INSERT INTO metric_5m(ts, key_id, avg, min, max) "
+                "VALUES (?,?,?,?,?)", (bucket, key_id, avg, low, high))
+            written += 1
+        self.conn.commit()
+        return written
+
+    def prune(self, cfg, now: int) -> dict[str, int]:
+        """Apply the retention periods. Returns rows deleted per table.
+
+        Raising a period resurrects nothing: deletion is permanent, and the
+        console will report the depth actually available rather than the one
+        requested.
+        """
+        day = 86_400
+        cutoffs = {
+            "metric": now - cfg.retention.raw_days * day,
+            "metric_5m": now - cfg.retention.aggregate_days * day,
+            "snapshot": now - cfg.retention.snapshot_days * day,
+            "action_run": now - cfg.retention.audit_days * day,
+        }
+        deleted: dict[str, int] = {}
+        for table, cutoff in cutoffs.items():
+            cursor = self.conn.execute(
+                f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+            deleted[table] = max(0, cursor.rowcount)
+        cursor = self.conn.execute(
+            "DELETE FROM event WHERE closed_ts IS NOT NULL AND closed_ts < ?",
+            (now - cfg.retention.event_days * day,))
+        deleted["event"] = max(0, cursor.rowcount)
+        self.conn.commit()
+        return deleted
+
+    def available_depth_seconds(self, table: str, now: int) -> int:
+        oldest = self.oldest_ts(table)
+        return 0 if oldest is None else max(0, now - oldest)
+
+    def vacuum(self) -> None:
+        self.conn.execute("VACUUM")
+        self.conn.commit()

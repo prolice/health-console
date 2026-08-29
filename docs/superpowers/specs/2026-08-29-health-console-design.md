@@ -38,8 +38,10 @@ Ces mesures ne sont pas décoratives : chacune contraint une décision.
   paquets apt ; ni Flask, ni FastAPI, ni uvicorn. → **Aucune dépendance hors apt,
   aucun venv.**
 - **Ressources** — 4 cœurs, 5,2 Go de RAM dont ~1,5 Go réellement disponible.
-  → **Budget : < 60 Mo de RSS pour le service, < 2 % de CPU en moyenne.** Un outil
-  de santé qui dégrade la santé de la machine est un échec de conception.
+  → **Budget : < 60 Mo de RSS pour le service, < 2 % de CPU en moyenne, base par
+  défaut ≈ 32 Mo.** Un outil de santé qui dégrade la santé de la machine est un
+  échec de conception. C'est ce budget qui impose de dissocier la cadence
+  d'affichage (2 s, en mémoire) de la cadence d'écriture (30 s, en base) — voir §6.1.
 - **Matériel** — SSD Crucial MX300 489 Go (`/dev/sda`), GPU AMD Radeon HD 6730M,
   batterie `BAT0`, souris Logitech avec batterie propre (`hidpp_battery_0`).
 - **Capteurs** — `lm-sensors` absent, mais `/sys/class/hwmon` expose `coretemp`,
@@ -147,33 +149,103 @@ sondage à 5 s.
 
 SQLite en mode WAL, `synchronous=NORMAL`, dans `~/.local/share/health-console/db.sqlite3`.
 
+### 6.1 Afficher finement n'est pas conserver longtemps
+
+Ce sont deux besoins distincts, et les confondre fait exploser la base. Une
+sparkline des 60 dernières minutes a besoin d'un point toutes les 2 secondes ; une
+tendance sur 90 jours n'en a aucun besoin.
+
+- **Tampon circulaire en mémoire** — 2 s, sur 60 minutes glissantes. C'est lui qui
+  alimente le direct et les sparklines. 1 800 points × ~25 métriques × 8 octets
+  ≈ **360 Kio de RAM**. Rien n'est écrit sur disque à cette cadence.
+- **Base** — écriture toutes les 30 s (`store_seconds`), valeur agrégée depuis le
+  tampon (moyenne, min, max). C'est amplement suffisant pour l'historique et
+  **divise le volume par 15**.
+
+### 6.2 Schéma
+
+Les clés de métriques sont **normalisées en entiers** : stocker la chaîne
+`"net.enp0s25.rx_bps"` sur chaque ligne coûterait plus cher que la mesure elle-même.
+
 ```sql
-CREATE TABLE metric     (ts INTEGER, key TEXT, value REAL);           -- brut 2 s
-CREATE TABLE metric_5m  (ts INTEGER, key TEXT, avg REAL, min REAL, max REAL);
+CREATE TABLE metric_key (id INTEGER PRIMARY KEY, key TEXT UNIQUE);
+CREATE TABLE metric     (ts INTEGER, key_id INTEGER, avg REAL, min REAL, max REAL);
+CREATE TABLE metric_5m  (ts INTEGER, key_id INTEGER, avg REAL, min REAL, max REAL);
 CREATE TABLE snapshot   (ts INTEGER, probe TEXT, json TEXT);
 CREATE TABLE event      (id INTEGER PRIMARY KEY, finding_id TEXT, severity TEXT,
                          opened_ts INTEGER, closed_ts INTEGER);
 CREATE TABLE action_run (id TEXT PRIMARY KEY, ts INTEGER, action_id TEXT,
                          source TEXT, exit_code INTEGER, duration_ms INTEGER,
                          output TEXT);
-CREATE INDEX metric_key_ts ON metric(key, ts);
+CREATE INDEX metric_key_ts ON metric(key_id, ts);
+CREATE INDEX metric_5m_key_ts ON metric_5m(key_id, ts);
 ```
 
-**Rétention en cascade, bornée par construction** — une base qui grossit sans
-limite est un problème de santé de plus, pas une fonctionnalité :
+### 6.3 Rétention configurable
 
-- `metric` brut : 48 h, puis agrégé en `metric_5m` et purgé
-- `metric_5m` : 90 jours
-- `snapshot` : le dernier de chaque sonde, plus un par heure sur 7 jours
-- `event` : conservé 1 an (volume négligeable, c'est la mémoire des incidents)
-- `action_run` : 1 an, sortie tronquée à 256 Kio
+Toutes les durées de conservation sont **exprimées en nombre de jours** et réglables
+dans `~/.config/health-console/config.toml` :
 
-Purge et agrégation quotidiennes, plus `VACUUM` hebdomadaire. Taille attendue en
-régime : **< 40 Mo**.
+```toml
+[retention]
+raw_days       = 2      # mesures fines (pas de 30 s)
+aggregate_days = 90     # moyennes 5 minutes — c'est ce qui porte les tendances
+snapshot_days  = 7      # états structurés horaires
+event_days     = 365    # incidents ouverts/fermés — la mémoire des pannes
+audit_days     = 365    # journal des actions exécutées
 
-Nommage des métriques : `cpu.usage`, `cpu.freq`, `cpu.temp.pkg`, `mem.available`,
-`mem.swap.used`, `load.1`, `disk.sda2.used_pct`, `net.enp0s25.rx_bps`,
-`thermal.<zone>`, `battery.charge_pct`, `battery.wear_pct`.
+[sampling]
+live_seconds   = 2      # rafraîchissement écran, mémoire uniquement
+store_seconds  = 30     # écriture en base
+```
+
+**Validation au démarrage**, avec refus explicite plutôt que comportement surprenant :
+
+- chaque durée est un entier ≥ 1 jour ;
+- `raw_days <= aggregate_days` — conserver le fin plus longtemps que l'agrégé n'a
+  pas de sens, et trahirait une faute de frappe ;
+- `store_seconds` doit être un multiple de `live_seconds` et ≤ 300 ;
+- une valeur invalide arrête le service avec un message nommant le champ fautif et
+  la valeur attendue. Un service qui démarre en ignorant silencieusement une
+  configuration erronée est un piège.
+
+### 6.4 Coût annoncé, pas subi
+
+Le service **calcule et affiche la taille prévue** au démarrage et dans
+`health-console status`, à partir du nombre de métriques réellement collectées sur
+cette machine :
+
+```
+lignes/jour  = 86400 / store_seconds × nb_métriques
+taille       ≈ raw_days × 2,9 Mo  +  aggregate_days × 0,29 Mo  +  ~3 Mo (reste)
+```
+
+Avec les valeurs par défaut sur cette machine (~25 métriques) : **≈ 32 Mo**.
+
+Au-delà de 500 Mo projetés, le démarrage affiche un avertissement explicite avec la
+taille estimée et le réglage en cause — **mais ne bloque pas** : c'est ta machine et
+ton disque, tu dois être prévenu, pas empêché.
+
+### 6.5 Effet d'un changement de rétention
+
+Il faut le dire franchement, parce que l'intuition trompe :
+
+- **Réduire** une durée purge les données excédentaires au prochain cycle quotidien,
+  ou immédiatement avec `health-console prune`.
+- **Augmenter** une durée **ne ressuscite rien**. L'historique repart de la date du
+  changement. La console affiche donc toujours la profondeur d'historique
+  *réellement disponible*, jamais celle demandée en configuration — sinon un
+  graphique « 90 jours » à moitié vide laisserait croire à une panne de collecte.
+
+Purge et agrégation quotidiennes, `VACUUM` hebdomadaire. Si le disque passe sous
+1 Go libre, l'écriture s'interrompt proprement et un constat le signale : la console
+ne doit jamais être la cause du remplissage qu'elle dénonce.
+
+### 6.6 Nommage des métriques
+
+`cpu.usage`, `cpu.freq`, `cpu.temp.pkg`, `mem.available`, `mem.swap.used`, `load.1`,
+`disk.sda2.used_pct`, `net.enp0s25.rx_bps`, `thermal.<zone>`, `battery.charge_pct`,
+`battery.wear_pct`.
 
 ## 7. Moteur de verdicts
 
@@ -469,7 +541,10 @@ se teste sans matériel et en millisecondes.
   l'ouvre ; le retour sous le seuil bas le ferme).
 - **Score** — la somme est exacte et chaque point perdu remonte à un constat.
 - **Stockage** — rétention, agrégation 5 min et purge, avec **horloge injectée**
-  (pas de test qui attend 48 h).
+  (pas de test qui attend 48 h). Chaque durée configurable est testée : une valeur
+  réduite purge, une valeur augmentée ne ressuscite rien, `raw_days > aggregate_days`
+  est refusé au démarrage, et l'estimation de taille est vérifiée contre le volume
+  réellement écrit après une simulation d'un mois d'échantillons.
 - **Serveur** — routage, jeton absent / faux / valide, refus d'action depuis une IP
   non loopback, comportement au-delà de 8 flux SSE.
 - **Actions** — construction des `argv` et validation du paramètre de `svc.restart`,
@@ -490,6 +565,8 @@ CLI `health-console` :
 - `status` — état du service, du jeton, des privilèges, de la base
 - `export [fichier]` — rapport HTML autonome
 - `token [--rotate]` — affiche ou régénère le jeton
+- `prune` — applique immédiatement les durées de rétention configurées
+- `config` — affiche la configuration effective et la taille de base projetée
 
 Unité systemd utilisateur : `WantedBy=default.target`, `Restart=on-failure`,
 `MemoryMax=128M` (garde-fou dur contre une fuite sur une machine à 5 Go).

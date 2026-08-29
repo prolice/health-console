@@ -39,8 +39,11 @@ après quoi plus personne ne lit les vraies alertes. Les erreurs sont regroupée
 motif ; seul ce qui est nouveau ou en accélération est signalé.
 
 **Un outil de santé ne doit pas nuire à la santé de la machine.** Budget cible :
-moins de 60 Mo de mémoire résidente, moins de 2 % de CPU en moyenne, base de
-données bornée à 40 Mo par une rétention en cascade.
+moins de 60 Mo de mémoire résidente, moins de 2 % de CPU en moyenne, et une base
+d'environ 32 Mo avec les réglages par défaut. Le direct à 2 secondes vit en mémoire ;
+seul un échantillon toutes les 30 secondes est écrit sur disque. Les durées de
+conservation se règlent en nombre de jours, et le service annonce la taille de base
+qu'elles impliquent **avant** qu'elle ne soit atteinte.
 
 ## Architecture
 

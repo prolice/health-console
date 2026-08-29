@@ -106,6 +106,35 @@ def _log_loop_error(exc: Exception) -> None:
           file=sys.stderr)
 
 
+def _tick_once(scheduler, cfg, last_flush, last_maintain, now=None):
+    """One iteration of the background collection loop.
+
+    Kept as a separate, importable function — rather than inlined in the
+    closure below — so the loop's resilience to a raising probe, store or
+    scheduler call can be exercised by a test without starting a real
+    server or thread. This console's whole premise is that it does not
+    quietly stop telling the truth, so that resilience is worth covering
+    directly rather than only by reading the diff.
+    """
+    now = time.time() if now is None else now
+    try:
+        scheduler.tick(now)
+        if now - last_flush >= cfg.sampling.store_seconds:
+            scheduler.flush(now)
+            last_flush = now
+        if now - last_maintain >= SECONDS_PER_DAY:
+            scheduler.maintain(now)
+            last_maintain = now
+    except Exception as exc:                  # noqa: BLE001
+        # A transient disk or database error must not permanently stop
+        # collection: log it and keep looping so the console recovers
+        # once the condition clears, instead of leaving the server
+        # answering with a state frozen at the last successful tick
+        # forever.
+        _log_loop_error(exc)
+    return last_flush, last_maintain
+
+
 def cmd_run(cfg) -> int:
     store, scheduler = _open(cfg)
     server = make_server(cfg, scheduler, WEB_DIR)
@@ -125,22 +154,8 @@ def cmd_run(cfg) -> int:
         last_flush = time.time()
         last_maintain = time.time()
         while not stop.is_set():
-            try:
-                now = time.time()
-                scheduler.tick(now)
-                if now - last_flush >= cfg.sampling.store_seconds:
-                    scheduler.flush(now)
-                    last_flush = now
-                if now - last_maintain >= SECONDS_PER_DAY:
-                    scheduler.maintain(now)
-                    last_maintain = now
-            except Exception as exc:               # noqa: BLE001
-                # A transient disk or database error must not permanently
-                # stop collection: log it and keep looping so the console
-                # recovers once the condition clears, instead of leaving
-                # the server answering with a state frozen at the last
-                # successful tick forever.
-                _log_loop_error(exc)
+            last_flush, last_maintain = _tick_once(
+                scheduler, cfg, last_flush, last_maintain)
             stop.wait(cfg.sampling.live_seconds)
 
     thread = threading.Thread(target=loop, daemon=True)

@@ -4651,9 +4651,10 @@ import io
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 
-from healthconsole.cli import human_bytes, main
+from healthconsole.cli import SECONDS_PER_DAY, _tick_once, human_bytes, main
 
 
 class TestHumanBytes(unittest.TestCase):
@@ -4710,6 +4711,90 @@ class TestCommands(unittest.TestCase):
         code, output = self.run_cli("--help")
         self.assertEqual(code, 0)
         self.assertIn("usage", output.lower())
+
+
+class _FakeScheduler:
+    """A scheduler stand-in that records calls and can be told to raise.
+
+    Used only to exercise `_tick_once`'s error handling without starting a
+    real server or touching a real database.
+    """
+
+    def __init__(self, raise_on=()):
+        self.raise_on = set(raise_on)
+        self.calls = []
+
+    def tick(self, now):
+        self.calls.append(("tick", now))
+        if "tick" in self.raise_on:
+            raise RuntimeError("tick failed")
+
+    def flush(self, now):
+        self.calls.append(("flush", now))
+        if "flush" in self.raise_on:
+            raise RuntimeError("flush failed")
+
+    def maintain(self, now):
+        self.calls.append(("maintain", now))
+        if "maintain" in self.raise_on:
+            raise RuntimeError("maintain failed")
+
+
+def _fake_cfg(store_seconds=30):
+    return SimpleNamespace(sampling=SimpleNamespace(store_seconds=store_seconds))
+
+
+class TestTickOnce(unittest.TestCase):
+    """`_tick_once` is the per-iteration body of `cmd_run`'s background
+    loop, extracted so the collection loop's resilience to a raising probe,
+    store or scheduler call can be tested without starting a real server.
+    """
+
+    def test_a_raising_tick_does_not_propagate(self):
+        scheduler = _FakeScheduler(raise_on={"tick"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _tick_once(scheduler, _fake_cfg(), last_flush=0,
+                       last_maintain=0, now=100)
+        self.assertIn("RuntimeError", err.getvalue())
+
+    def test_a_raising_flush_does_not_propagate(self):
+        # A disk-full error surfacing from write_metrics is the realistic
+        # case that motivated this: it must not kill the collection loop.
+        scheduler = _FakeScheduler(raise_on={"flush"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _tick_once(scheduler, _fake_cfg(store_seconds=30), last_flush=0,
+                       last_maintain=0, now=100)
+        self.assertIn("RuntimeError", err.getvalue())
+
+    def test_the_normal_path_advances_the_bookkeeping(self):
+        scheduler = _FakeScheduler()
+        last_flush, _ = _tick_once(
+            scheduler, _fake_cfg(store_seconds=30),
+            last_flush=0, last_maintain=0, now=100)
+        self.assertIn(("flush", 100), scheduler.calls)
+        self.assertEqual(last_flush, 100)
+
+        scheduler = _FakeScheduler()
+        _, last_maintain = _tick_once(
+            scheduler, _fake_cfg(store_seconds=30),
+            last_flush=0, last_maintain=0, now=SECONDS_PER_DAY + 1)
+        self.assertIn(("maintain", SECONDS_PER_DAY + 1), scheduler.calls)
+        self.assertEqual(last_maintain, SECONDS_PER_DAY + 1)
+
+    def test_a_raising_tick_leaves_bookkeeping_unchanged(self):
+        # A failure must not silently skip a flush window: if tick() blew
+        # up, last_flush/last_maintain should come back exactly as given.
+        scheduler = _FakeScheduler(raise_on={"tick"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            last_flush, last_maintain = _tick_once(
+                scheduler, _fake_cfg(store_seconds=30),
+                last_flush=0, last_maintain=0, now=100)
+        self.assertEqual(last_flush, 0)
+        self.assertEqual(last_maintain, 0)
+        self.assertNotIn(("flush", 100), scheduler.calls)
 
 
 if __name__ == "__main__":
@@ -4872,6 +4957,35 @@ def _log_loop_error(exc: Exception) -> None:
           file=sys.stderr)
 
 
+def _tick_once(scheduler, cfg, last_flush, last_maintain, now=None):
+    """One iteration of the background collection loop.
+
+    Kept as a separate, importable function — rather than inlined in the
+    closure below — so the loop's resilience to a raising probe, store or
+    scheduler call can be exercised by a test without starting a real
+    server or thread. This console's whole premise is that it does not
+    quietly stop telling the truth, so that resilience is worth covering
+    directly rather than only by reading the diff.
+    """
+    now = time.time() if now is None else now
+    try:
+        scheduler.tick(now)
+        if now - last_flush >= cfg.sampling.store_seconds:
+            scheduler.flush(now)
+            last_flush = now
+        if now - last_maintain >= SECONDS_PER_DAY:
+            scheduler.maintain(now)
+            last_maintain = now
+    except Exception as exc:                  # noqa: BLE001
+        # A transient disk or database error must not permanently stop
+        # collection: log it and keep looping so the console recovers
+        # once the condition clears, instead of leaving the server
+        # answering with a state frozen at the last successful tick
+        # forever.
+        _log_loop_error(exc)
+    return last_flush, last_maintain
+
+
 def cmd_run(cfg) -> int:
     store, scheduler = _open(cfg)
     server = make_server(cfg, scheduler, WEB_DIR)
@@ -4891,22 +5005,8 @@ def cmd_run(cfg) -> int:
         last_flush = time.time()
         last_maintain = time.time()
         while not stop.is_set():
-            try:
-                now = time.time()
-                scheduler.tick(now)
-                if now - last_flush >= cfg.sampling.store_seconds:
-                    scheduler.flush(now)
-                    last_flush = now
-                if now - last_maintain >= SECONDS_PER_DAY:
-                    scheduler.maintain(now)
-                    last_maintain = now
-            except Exception as exc:               # noqa: BLE001
-                # A transient disk or database error must not permanently
-                # stop collection: log it and keep looping so the console
-                # recovers once the condition clears, instead of leaving
-                # the server answering with a state frozen at the last
-                # successful tick forever.
-                _log_loop_error(exc)
+            last_flush, last_maintain = _tick_once(
+                scheduler, cfg, last_flush, last_maintain)
             stop.wait(cfg.sampling.live_seconds)
 
     thread = threading.Thread(target=loop, daemon=True)

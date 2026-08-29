@@ -155,6 +155,10 @@ class Store:
         Raising a period resurrects nothing: deletion is permanent, and the
         console will report the depth actually available rather than the one
         requested.
+
+        Must run AFTER aggregate_5m: pruning first destroys raw metric rows
+        before they are folded into the 5-minute aggregates, permanently losing
+        that history.
         """
         day = 86_400
         cutoffs = {

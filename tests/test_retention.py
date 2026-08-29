@@ -114,5 +114,35 @@ class TestAvailableDepth(RetentionCase):
             2 * DAY + 3600)
 
 
+class TestEventPruning(RetentionCase):
+    def test_open_event_survives_pruning_at_any_age(self):
+        now = 100 * DAY
+        opened_ts = now - 30 * DAY
+        self.store.conn.execute(
+            "INSERT INTO event(finding_id, severity, opened_ts, closed_ts) "
+            "VALUES (?, ?, ?, ?)",
+            ("test-finding", "critical", opened_ts, None))
+        self.store.conn.commit()
+        deleted = self.store.prune(
+            Config(retention=Retention(event_days=1)), now=now)
+        remaining = self.store.count_rows("event")
+        self.assertEqual(remaining, 1)
+        self.assertEqual(deleted["event"], 0)
+
+    def test_closed_event_older_than_retention_is_removed(self):
+        now = 100 * DAY
+        closed_ts = now - 30 * DAY
+        self.store.conn.execute(
+            "INSERT INTO event(finding_id, severity, opened_ts, closed_ts) "
+            "VALUES (?, ?, ?, ?)",
+            ("test-finding", "critical", now - 31 * DAY, closed_ts))
+        self.store.conn.commit()
+        deleted = self.store.prune(
+            Config(retention=Retention(event_days=1)), now=now)
+        remaining = self.store.count_rows("event")
+        self.assertEqual(remaining, 0)
+        self.assertEqual(deleted["event"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

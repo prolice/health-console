@@ -2255,6 +2255,25 @@ class TestEvaluate(unittest.TestCase):
             {"status": "unavailable", "reason": "no battery"}, context()), [])
 
 
+class TestOvercharge(unittest.TestCase):
+    def test_slight_overcharge_is_clamped_not_dropped(self):
+        # The driver may report charge slightly above full right after a
+        # complete charge. battery_capacity_is_coherent tolerates up to 105%.
+        # But a battery cannot be more than fully charged; clamping keeps the
+        # value in the percent domain instead of having it silently dropped
+        # downstream by sane().
+        sample = {
+            "status": "ok", "present": True, "state": "Full",
+            "charge_pct": min(100.0, 1100 / 1050 * 100.0),  # 104.76 -> 100.0
+            "wear_pct": 0.0,
+            "raw": {"charge_now": 1100, "charge_full": 1050,
+                    "charge_full_design": 1000},
+        }
+        metrics = battery.metrics(sample)
+        self.assertIn("battery.charge_pct", metrics)
+        self.assertEqual(metrics["battery.charge_pct"], 100.0)
+
+
 class TestCollectSmoke(unittest.TestCase):
     def test_collect_never_raises(self):
         sample = battery.collect()
@@ -2610,9 +2629,14 @@ def collect() -> dict:
         return {"status": "incoherent", "raw": raw,
                 "reason": "implausible capacities reported by the driver"}
 
+    # battery_capacity_is_coherent tolerates charge up to 105% of full to absorb
+    # driver rounding after a complete charge. But a battery cannot be more than
+    # fully charged; clamping keeps the value in the percent domain instead of
+    # having it silently dropped downstream by sane().
+    charge_pct = min(100.0, now / full * 100.0)
     return {
         "status": "ok", "present": True, "state": state,
-        "charge_pct": now / full * 100.0,
+        "charge_pct": charge_pct,
         "wear_pct": wear_pct(full, design),
         "raw": raw,
     }

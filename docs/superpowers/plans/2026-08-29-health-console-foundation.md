@@ -151,6 +151,41 @@ class TestValidation(unittest.TestCase):
         self.assertIn(str(path), str(ctx.exception))
 
 
+class TestServerConfig(unittest.TestCase):
+    def test_allow_remote_actions_string_false_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nallow_remote_actions = "false"\n'))
+        self.assertIn("allow_remote_actions", str(ctx.exception))
+
+    def test_allow_remote_actions_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nallow_remote_actions = 1\n'))
+        self.assertIn("allow_remote_actions", str(ctx.exception))
+
+    def test_allow_remote_actions_boolean_true_loads(self):
+        cfg = load_config(write_toml('[server]\nallow_remote_actions = true\n'))
+        self.assertTrue(cfg.allow_remote_actions)
+
+    def test_token_as_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\ntoken = 12345\n'))
+        self.assertIn("token", str(ctx.exception))
+
+    def test_bind_as_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nbind = 42\n'))
+        self.assertIn("bind", str(ctx.exception))
+
+    def test_valid_server_section_loads(self):
+        cfg = load_config(write_toml(
+            '[server]\nbind = "127.0.0.1"\nport = 9000\n'
+            'allow_remote_actions = false\ntoken = "secret"\n'))
+        self.assertEqual(cfg.bind, "127.0.0.1")
+        self.assertEqual(cfg.port, 9000)
+        self.assertFalse(cfg.allow_remote_actions)
+        self.assertEqual(cfg.token, "secret")
+
+
 class TestEstimate(unittest.TestCase):
     def test_default_config_estimates_about_32_MB(self):
         size = estimate_db_bytes(Config(), n_metrics=25)
@@ -248,6 +283,24 @@ def _int_field(table: dict, name: str, default: int, section: str) -> int:
     return value
 
 
+def _bool_field(table: dict, name: str, default: bool, section: str) -> bool:
+    value = table.get(name, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"[{section}] {name} must be a boolean, "
+            f"got: {value!r}")
+    return value
+
+
+def _str_field(table: dict, name: str, default: str, section: str) -> str:
+    value = table.get(name, default)
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"[{section}] {name} must be a string, "
+            f"got: {value!r}")
+    return value
+
+
 def load_config(path: Path | None = None) -> Config:
     path = DEFAULT_CONFIG_PATH if path is None else path
     data: dict = {}
@@ -259,30 +312,30 @@ def load_config(path: Path | None = None) -> Config:
 
     retention_table = data.get("retention", {})
     retention = Retention(
-        raw_days=_int_field(retention_table, "raw_days", 2, "retention"),
+        raw_days=_int_field(retention_table, "raw_days", Retention.raw_days, "retention"),
         aggregate_days=_int_field(
-            retention_table, "aggregate_days", 90, "retention"),
+            retention_table, "aggregate_days", Retention.aggregate_days, "retention"),
         snapshot_days=_int_field(
-            retention_table, "snapshot_days", 7, "retention"),
-        event_days=_int_field(retention_table, "event_days", 365, "retention"),
-        audit_days=_int_field(retention_table, "audit_days", 365, "retention"),
+            retention_table, "snapshot_days", Retention.snapshot_days, "retention"),
+        event_days=_int_field(retention_table, "event_days", Retention.event_days, "retention"),
+        audit_days=_int_field(retention_table, "audit_days", Retention.audit_days, "retention"),
     )
     sampling_table = data.get("sampling", {})
     sampling = Sampling(
         live_seconds=_int_field(
-            sampling_table, "live_seconds", 2, "sampling"),
+            sampling_table, "live_seconds", Sampling.live_seconds, "sampling"),
         store_seconds=_int_field(
-            sampling_table, "store_seconds", 30, "sampling"),
+            sampling_table, "store_seconds", Sampling.store_seconds, "sampling"),
     )
     server_table = data.get("server", {})
     cfg = Config(
         retention=retention,
         sampling=sampling,
-        bind=server_table.get("bind", "0.0.0.0"),
-        port=_int_field(server_table, "port", 8787, "server"),
-        allow_remote_actions=bool(
-            server_table.get("allow_remote_actions", False)),
-        token=str(server_table.get("token", "")),
+        bind=_str_field(server_table, "bind", Config.bind, "server"),
+        port=_int_field(server_table, "port", Config.port, "server"),
+        allow_remote_actions=_bool_field(
+            server_table, "allow_remote_actions", Config.allow_remote_actions, "server"),
+        token=_str_field(server_table, "token", Config.token, "server"),
     )
     validate(cfg)
     return cfg

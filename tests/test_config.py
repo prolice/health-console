@@ -65,6 +65,41 @@ class TestValidation(unittest.TestCase):
         self.assertIn(str(path), str(ctx.exception))
 
 
+class TestServerConfig(unittest.TestCase):
+    def test_allow_remote_actions_string_false_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nallow_remote_actions = "false"\n'))
+        self.assertIn("allow_remote_actions", str(ctx.exception))
+
+    def test_allow_remote_actions_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nallow_remote_actions = 1\n'))
+        self.assertIn("allow_remote_actions", str(ctx.exception))
+
+    def test_allow_remote_actions_boolean_true_loads(self):
+        cfg = load_config(write_toml('[server]\nallow_remote_actions = true\n'))
+        self.assertTrue(cfg.allow_remote_actions)
+
+    def test_token_as_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\ntoken = 12345\n'))
+        self.assertIn("token", str(ctx.exception))
+
+    def test_bind_as_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nbind = 42\n'))
+        self.assertIn("bind", str(ctx.exception))
+
+    def test_valid_server_section_loads(self):
+        cfg = load_config(write_toml(
+            '[server]\nbind = "127.0.0.1"\nport = 9000\n'
+            'allow_remote_actions = false\ntoken = "secret"\n'))
+        self.assertEqual(cfg.bind, "127.0.0.1")
+        self.assertEqual(cfg.port, 9000)
+        self.assertFalse(cfg.allow_remote_actions)
+        self.assertEqual(cfg.token, "secret")
+
+
 class TestEstimate(unittest.TestCase):
     def test_default_config_estimates_about_32_MB(self):
         size = estimate_db_bytes(Config(), n_metrics=25)

@@ -1,4 +1,6 @@
 import io
+import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -39,6 +41,26 @@ class TestCommands(unittest.TestCase):
     def test_unknown_command_is_refused(self):
         code, _ = self.run_cli("teleport")
         self.assertEqual(code, 2)
+
+    def test_config_announces_the_file_it_actually_read(self):
+        # The command must never claim to have read the default path when
+        # --config pointed it somewhere else.
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".toml", delete=False) as handle:
+            handle.write('[server]\nport = 9999\n')
+            path = handle.name
+        try:
+            code, output = self.run_cli("--config", path, "config")
+        finally:
+            os.unlink(path)
+        self.assertEqual(code, 0)
+        self.assertIn(path, output)
+        self.assertIn("9999", output)
+
+    def test_help_exits_zero(self):
+        code, output = self.run_cli("--help")
+        self.assertEqual(code, 0)
+        self.assertIn("usage", output.lower())
 
 
 if __name__ == "__main__":

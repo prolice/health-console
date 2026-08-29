@@ -48,9 +48,9 @@ def _open(cfg):
     return store, Scheduler(cfg, store, ring)
 
 
-def cmd_config(cfg) -> int:
+def cmd_config(cfg, config_path: Path) -> int:
     retention, sampling = cfg.retention, cfg.sampling
-    print(f"Config file      : {DEFAULT_CONFIG_PATH}")
+    print(f"Config file      : {config_path}")
     print(f"Listening on     : {cfg.bind}:{cfg.port}")
     print(f"Token            : {'set' if cfg.token else 'absent'}")
     print("Retention (days)")
@@ -70,7 +70,9 @@ def cmd_config(cfg) -> int:
 
 
 def cmd_status(cfg) -> int:
-    store, _ = _open(cfg)
+    # No Ring/Scheduler needed here: status only reads the store, so open
+    # it directly rather than paying for a Scheduler (which loads probes).
+    store = Store(default_db_path())
     try:
         now = int(time.time())
         print(f"Database         : {store.path}")
@@ -99,25 +101,50 @@ def cmd_prune(cfg) -> int:
     return 0
 
 
+def _log_loop_error(exc: Exception) -> None:
+    print(f"scheduler loop error: {type(exc).__name__}: {exc}",
+          file=sys.stderr)
+
+
 def cmd_run(cfg) -> int:
     store, scheduler = _open(cfg)
     server = make_server(cfg, scheduler, WEB_DIR)
+    stop = threading.Event()
 
     def loop():
+        # Enforce retention once at startup, before entering the periodic
+        # loop below. A machine that restarts daily (suspends, reboots, or
+        # has its service restarted nightly) may never keep this thread
+        # alive for the full 86400 seconds the periodic check waits for, so
+        # without this call `store.prune()` could simply never run and the
+        # database would grow unbounded.
+        try:
+            scheduler.maintain()
+        except Exception as exc:                  # noqa: BLE001
+            _log_loop_error(exc)
         last_flush = time.time()
         last_maintain = time.time()
-        while True:
-            now = time.time()
-            scheduler.tick(now)
-            if now - last_flush >= cfg.sampling.store_seconds:
-                scheduler.flush(now)
-                last_flush = now
-            if now - last_maintain >= SECONDS_PER_DAY:
-                scheduler.maintain(now)
-                last_maintain = now
-            time.sleep(cfg.sampling.live_seconds)
+        while not stop.is_set():
+            try:
+                now = time.time()
+                scheduler.tick(now)
+                if now - last_flush >= cfg.sampling.store_seconds:
+                    scheduler.flush(now)
+                    last_flush = now
+                if now - last_maintain >= SECONDS_PER_DAY:
+                    scheduler.maintain(now)
+                    last_maintain = now
+            except Exception as exc:               # noqa: BLE001
+                # A transient disk or database error must not permanently
+                # stop collection: log it and keep looping so the console
+                # recovers once the condition clears, instead of leaving
+                # the server answering with a state frozen at the last
+                # successful tick forever.
+                _log_loop_error(exc)
+            stop.wait(cfg.sampling.live_seconds)
 
-    threading.Thread(target=loop, daemon=True).start()
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
     print(f"Health Console on http://{cfg.bind}:{cfg.port}")
     print("Ctrl+C to stop.")
     try:
@@ -125,7 +152,9 @@ def cmd_run(cfg) -> int:
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
+        stop.set()
         server.server_close()
+        thread.join(timeout=5)
         store.close()
     return 0
 
@@ -143,15 +172,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="path to a configuration file")
     try:
         args = parser.parse_args(argv)
-    except SystemExit:
-        parser.print_usage()
-        return 2
+    except SystemExit as exc:
+        # -h/--help exits 0 after printing the full help to stdout; an
+        # invalid argument exits 2 after argparse has already printed usage
+        # and the error to stderr. Either way argparse already wrote
+        # everything needed, so do not print a second, duplicate usage line.
+        return exc.code if exc.code else 0
     if args.command is None:
         parser.print_usage()
         return 2
+    config_path = DEFAULT_CONFIG_PATH if args.config is None else args.config
     try:
         cfg = load_config(args.config)
     except ConfigError as exc:
         print(f"Invalid configuration: {exc}", file=sys.stderr)
         return 1
+    if args.command == "config":
+        return cmd_config(cfg, config_path)
     return COMMANDS[args.command](cfg)

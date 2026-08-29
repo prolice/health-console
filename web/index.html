@@ -1,5 +1,51 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Health Console</title></head>
-<body><p>Health Console — interface loading.</p></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Health Console</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1 id="app-title"></h1>
+    <div class="controls">
+      <div class="modes" role="tablist" aria-label="Detail level">
+        <button id="mode-simple" role="tab" aria-selected="true"></button>
+        <button id="mode-expert" role="tab" aria-selected="false"></button>
+      </div>
+      <label class="locale-field">
+        <span id="locale-label"></span>
+        <select id="locale">
+          <option value="en">English</option>
+          <option value="fr">Français</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <p id="freshness" class="freshness" aria-live="polite"></p>
+
+  <main id="simple" class="view">
+    <section class="verdict" aria-live="polite">
+      <p class="verdict-state">
+        <span id="verdict-icon" aria-hidden="true"></span>
+        <span id="verdict-word"></span>
+      </p>
+      <p class="verdict-sentence" id="verdict-sentence"></p>
+      <p class="verdict-score">
+        <span id="score-label"></span>
+        <strong id="score">—</strong><span aria-hidden="true">/100</span>
+      </p>
+    </section>
+    <div id="findings"></div>
+  </main>
+
+  <main id="expert" class="view" hidden>
+    <p id="expert-placeholder"></p>
+    <pre id="raw"></pre>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
 </html>

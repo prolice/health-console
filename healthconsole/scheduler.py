@@ -14,13 +14,14 @@ write path would race on `metric_key.key UNIQUE` and raise IntegrityError.
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import asdict
 
 from healthconsole import rules
 from healthconsole.config import Config
 from healthconsole.findings import Severity
-from healthconsole.probes import FAST, EvalContext, load_probes
+from healthconsole.probes import FAST, EvalContext, load_probes, unavailable
 from healthconsole.probes import network as network_probe
 from healthconsole.ring import Ring
 from healthconsole.store import Store
@@ -79,8 +80,8 @@ class Scheduler:
                 measurements.update(probe.metrics(sample))
             except Exception as exc:              # noqa: BLE001
                 # A failing probe never brings the others down.
-                samples[probe.NAME] = {"status": "unavailable",
-                                       "reason": f"probe failed: {exc}"}
+                samples[probe.NAME] = unavailable(
+                    f"probe failed: {type(exc).__name__}: {exc}")
 
         measurements.update(self._network_rates(samples, now))
         for key, value in measurements.items():
@@ -98,7 +99,18 @@ class Scheduler:
         for probe in self.probes:
             try:
                 findings.extend(probe.evaluate(samples.get(probe.NAME, {}), ctx))
-            except Exception:                     # noqa: BLE001
+            except Exception as exc:              # noqa: BLE001
+                # The reading itself succeeded and was already pushed to the
+                # ring before evaluate() ran; only the judgement failed. That
+                # is a different failure from an unavailable sensor, so the
+                # status is deliberately left as measured rather than
+                # flipped to unavailable, which would misdescribe what broke
+                # and would hide the collected data from Expert mode.
+                sample = samples.get(probe.NAME)
+                if isinstance(sample, dict):
+                    sample["eval_error"] = f"{type(exc).__name__}: {exc}"
+                print(f"{probe.NAME}: evaluate() failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
 
         self._state = {

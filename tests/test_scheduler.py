@@ -80,6 +80,36 @@ class TestTick(SchedulerCase):
         self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
         self.assertEqual(state["probes"]["cpu"]["status"], "ok")
 
+    def test_a_raising_evaluate_does_not_stop_the_others_findings(self):
+        class Raising(FakeProbe):
+            NAME = "memory"
+
+            def evaluate(self, sample, ctx):
+                raise RuntimeError("bad rule")
+
+        raising = Raising()
+        self.probe.value = 99.0
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[raising, self.probe])
+        scheduler.tick(now=1000.0)
+        state = scheduler.tick(now=1301.0)
+        self.assertEqual(len(state["findings"]), 1)
+        self.assertEqual(state["probes"]["memory"]["status"], "ok")
+        self.assertIn("RuntimeError", state["probes"]["memory"]["eval_error"])
+
+    def test_a_raising_metrics_marks_the_probe_unavailable(self):
+        class BadMetrics(FakeProbe):
+            NAME = "memory"
+
+            def metrics(self, sample):
+                raise RuntimeError("bad metrics")
+
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[BadMetrics()])
+        state = scheduler.tick(now=1000.0)
+        self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
+        self.assertIn("RuntimeError", state["probes"]["memory"]["reason"])
+
 
 class TestSustained(SchedulerCase):
     def test_brief_spike_produces_no_finding(self):

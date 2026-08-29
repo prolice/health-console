@@ -2823,6 +2823,36 @@ class TestTick(SchedulerCase):
         self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
         self.assertEqual(state["probes"]["cpu"]["status"], "ok")
 
+    def test_a_raising_evaluate_does_not_stop_the_others_findings(self):
+        class Raising(FakeProbe):
+            NAME = "memory"
+
+            def evaluate(self, sample, ctx):
+                raise RuntimeError("bad rule")
+
+        raising = Raising()
+        self.probe.value = 99.0
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[raising, self.probe])
+        scheduler.tick(now=1000.0)
+        state = scheduler.tick(now=1301.0)
+        self.assertEqual(len(state["findings"]), 1)
+        self.assertEqual(state["probes"]["memory"]["status"], "ok")
+        self.assertIn("RuntimeError", state["probes"]["memory"]["eval_error"])
+
+    def test_a_raising_metrics_marks_the_probe_unavailable(self):
+        class BadMetrics(FakeProbe):
+            NAME = "memory"
+
+            def metrics(self, sample):
+                raise RuntimeError("bad metrics")
+
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[BadMetrics()])
+        state = scheduler.tick(now=1000.0)
+        self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
+        self.assertIn("RuntimeError", state["probes"]["memory"]["reason"])
+
 
 class TestSustained(SchedulerCase):
     def test_brief_spike_produces_no_finding(self):
@@ -2886,17 +2916,25 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'healthconsole.schedule
 The live view fills the in-memory ring; only an aggregated value reaches the
 database. The scheduler is also the only component that knows the clock, which
 is what keeps probes and rules purely functional.
+
+Single-writer invariant: `Store` opens SQLite with `check_same_thread=False`
+and `key_id` performs an unlocked SELECT-then-INSERT, which is safe only
+because exactly one thread writes while HTTP request threads use read-only
+methods. The `Scheduler` is that one writer — it must remain the ONLY
+component that calls `write_metrics`, `aggregate_5m` or `prune`. A second
+write path would race on `metric_key.key UNIQUE` and raise IntegrityError.
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import asdict
 
 from healthconsole import rules
 from healthconsole.config import Config
 from healthconsole.findings import Severity
-from healthconsole.probes import FAST, EvalContext, load_probes
+from healthconsole.probes import FAST, EvalContext, load_probes, unavailable
 from healthconsole.probes import network as network_probe
 from healthconsole.ring import Ring
 from healthconsole.store import Store
@@ -2921,6 +2959,13 @@ EMPTY_STATE: dict = {
 
 
 class Scheduler:
+    """Ties probes, ring, hysteresis and store together on a single clock.
+
+    The Scheduler is the only background writer to the Store: `write_metrics`,
+    `aggregate_5m` and `prune` must never be called from anywhere else, since
+    `Store` assumes a single writer thread (see module docstring above).
+    """
+
     def __init__(self, cfg: Config, store: Store, ring: Ring,
                  probes=None, clock=time.time) -> None:
         self.cfg = cfg
@@ -2948,8 +2993,8 @@ class Scheduler:
                 measurements.update(probe.metrics(sample))
             except Exception as exc:              # noqa: BLE001
                 # A failing probe never brings the others down.
-                samples[probe.NAME] = {"status": "unavailable",
-                                       "reason": f"probe failed: {exc}"}
+                samples[probe.NAME] = unavailable(
+                    f"probe failed: {type(exc).__name__}: {exc}")
 
         measurements.update(self._network_rates(samples, now))
         for key, value in measurements.items():
@@ -2967,7 +3012,18 @@ class Scheduler:
         for probe in self.probes:
             try:
                 findings.extend(probe.evaluate(samples.get(probe.NAME, {}), ctx))
-            except Exception:                     # noqa: BLE001
+            except Exception as exc:              # noqa: BLE001
+                # The reading itself succeeded and was already pushed to the
+                # ring before evaluate() ran; only the judgement failed. That
+                # is a different failure from an unavailable sensor, so the
+                # status is deliberately left as measured rather than
+                # flipped to unavailable, which would misdescribe what broke
+                # and would hide the collected data from Expert mode.
+                sample = samples.get(probe.NAME)
+                if isinstance(sample, dict):
+                    sample["eval_error"] = f"{type(exc).__name__}: {exc}"
+                print(f"{probe.NAME}: evaluate() failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
 
         self._state = {
@@ -4280,11 +4336,13 @@ export function render(state) {
   }
 
   // An unavailable probe is shown as unavailable, never as a reassuring zero.
+  // A probe whose evaluate() raised keeps status "ok" (the reading itself
+  // succeeded) but carries eval_error, and that must not stay invisible.
   for (const [name, probe] of Object.entries(state.probes || {})) {
-    if (probe.status === "ok") continue;
+    if (probe.status === "ok" && !probe.eval_error) continue;
     host.append(card("INFO",
       translate("ui.probe.unavailable", { probe: name }),
-      probe.reason || ""));
+      probe.reason || probe.eval_error || ""));
   }
 
   el("raw").textContent = JSON.stringify(state, null, 2);

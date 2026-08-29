@@ -20,6 +20,8 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.freshness.stale",
     "ui.probe.unavailable",
     "ui.expert.placeholder",
+    "ui.state.no_measurement",
+    "ui.state.no_measurement.detail",
 })
 
 

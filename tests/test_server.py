@@ -5,12 +5,14 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from healthconsole.config import Config
 from healthconsole.ring import Ring
 from healthconsole.scheduler import Scheduler
 from healthconsole.server import (
-    authorise, generate_token, is_loopback, make_server,
+    authorise, cookie_token, generate_token, is_loopback, make_server,
+    session_cookie_header,
 )
 from healthconsole.store import Store
 
@@ -160,6 +162,112 @@ class TestHttp(unittest.TestCase):
         headers, _, body = raw.partition(b"\r\n\r\n")
         self.assertIn(b"Content-Length", headers)
         self.assertEqual(body, b"")
+
+
+class TestCookieTokenParsing(unittest.TestCase):
+    def test_absent_header_yields_no_token(self):
+        self.assertIsNone(cookie_token(None))
+        self.assertIsNone(cookie_token(""))
+
+    def test_valid_cookie_is_read(self):
+        self.assertEqual(cookie_token("health_token=abc123"), "abc123")
+
+    def test_unrelated_cookie_yields_no_token(self):
+        self.assertIsNone(cookie_token("other=value"))
+
+    def test_malformed_header_does_not_raise(self):
+        # http.cookies.SimpleCookie.load raises CookieError on a header
+        # like this one; a bad Cookie header sent by anyone on the LAN must
+        # not be able to take a request down with it.
+        self.assertIsNone(cookie_token("====="))
+
+
+class TestSessionCookieHeader(unittest.TestCase):
+    def test_cookie_is_httponly_and_samesite_strict_without_secure(self):
+        # No Secure flag: this is plain HTTP on a LAN, and Secure would stop
+        # the browser sending the cookie back over it at all.
+        header = session_cookie_header("abc123")
+        self.assertIn("health_token=abc123", header)
+        self.assertIn("HttpOnly", header)
+        self.assertIn("SameSite=Strict", header)
+        self.assertNotIn("Secure", header)
+
+
+class TestLanCookieHandoff(unittest.TestCase):
+    """Exercises do_GET's cookie handoff for a non-loopback client.
+
+    Real sockets in this test suite all connect over 127.0.0.1, so
+    `is_loopback` is monkeypatched for the duration of each test to force
+    the code down the LAN path -- the way the review brief suggested as an
+    alternative to standing up a real non-loopback client.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.store = Store(":memory:")
+        cls.scheduler = Scheduler(Config(token="s3cr3t"), cls.store, Ring())
+        cls.scheduler.tick(now=1000.0)
+        cls.server = make_server(Config(bind="127.0.0.1", port=0, token="s3cr3t"),
+                                 cls.scheduler, WEB_DIR)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.store.close()
+
+    def setUp(self):
+        patcher = mock.patch("healthconsole.server.is_loopback",
+                             return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def url(self, path):
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def test_query_token_returns_200_and_sets_a_session_cookie(self):
+        response = urllib.request.urlopen(
+            self.url("/api/now?k=s3cr3t"), timeout=5)
+        self.assertEqual(response.status, 200)
+        cookie = response.headers.get("Set-Cookie")
+        self.assertIsNotNone(cookie)
+        self.assertIn("health_token", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+
+    def test_header_token_does_not_trigger_a_cookie(self):
+        request = urllib.request.Request(self.url("/api/now"))
+        request.add_header("X-Health-Token", "s3cr3t")
+        response = urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(response.status, 200)
+        self.assertIsNone(response.headers.get("Set-Cookie"))
+
+    def test_a_valid_cookie_alone_authorises_a_later_request(self):
+        request = urllib.request.Request(self.url("/api/now"))
+        request.add_header("Cookie", "health_token=s3cr3t")
+        response = urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(response.status, 200)
+
+    def test_wrong_cookie_is_refused(self):
+        request = urllib.request.Request(self.url("/api/now"))
+        request.add_header("Cookie", "health_token=wrong")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_malformed_cookie_header_is_refused_not_crashed(self):
+        request = urllib.request.Request(self.url("/api/now"))
+        request.add_header("Cookie", "=====")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_no_token_at_all_is_still_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(self.url("/api/now"), timeout=5)
+        self.assertEqual(ctx.exception.code, 401)
 
 
 if __name__ == "__main__":

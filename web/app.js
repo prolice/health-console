@@ -3,7 +3,15 @@
 const FALLBACK_LOCALE = "en";
 const AVAILABLE_LOCALES = ["en", "fr"];
 const DEFAULT_MODE = "simple";
+// No SSE event at all for this long: the stream itself is presumed down.
 const STALE_AFTER_MS = 15000;
+// A measurement older than this is stale even while the stream stays open --
+// set well above the 2 s live cadence so ordinary scheduling jitter or a
+// single delayed tick never flaps the banner, but a wedged collector that
+// keeps re-emitting the same state (see EMPTY_STATE / scheduler.state())
+// is still caught rather than shown as "up to date" forever.
+const MEASUREMENT_STALE_AFTER_SECONDS = 30;
+const TOKEN_STORAGE_KEY = "health_token";
 
 let catalogue = {};
 let fallback = {};
@@ -17,6 +25,29 @@ let isStale = false;
 let interfaceTextUnavailable = false;
 
 function el(id) { return document.getElementById(id); }
+
+// A ?k=<token> link (shared or bookmarked) is the only way a plain
+// navigation can authenticate. The server hands that token off to a
+// session cookie on its response (see healthconsole/server.py), which
+// covers every subsequent same-origin request automatically -- including
+// EventSource, which cannot set a custom header at all. Reading and
+// storing it here too, and sending it as X-Health-Token on our own
+// fetch() calls, is belt-and-braces for the window before that cookie
+// lands. The token is stripped from the visible URL immediately so it
+// does not linger in the address bar, browser history or a bookmark.
+function adoptTokenFromUrl() {
+  const url = new URL(location.href);
+  const token = url.searchParams.get("k");
+  if (!token) return;
+  localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  url.searchParams.delete("k");
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+}
+
+function authHeaders() {
+  const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  return token ? { "X-Health-Token": token } : {};
+}
 
 function pickLocale() {
   const stored = localStorage.getItem("locale");
@@ -57,7 +88,8 @@ export function formatBytes(bytes) {
 }
 
 async function loadCatalogue(target) {
-  const response = await fetch(`/static/i18n/${target}.json`);
+  const response = await fetch(`/static/i18n/${target}.json`,
+    { headers: authHeaders() });
   if (!response.ok) {
     throw new Error(`catalogue unavailable: ${target} (${response.status})`);
   }
@@ -118,8 +150,42 @@ function card(severity, titleText, whyText) {
   return article;
 }
 
+// A state with no ts/score is not a measurement of anything -- it is the
+// scheduler's EMPTY_STATE, seen before the first tick completes (or, in
+// principle, if the collector never runs at all). Showing a score or a
+// severity for it would be exactly the reassuring lie this console refuses
+// to tell.
+function hasMeasurement(state) {
+  return Boolean(state) && state.ts != null && state.score != null;
+}
+
+// Stale means either signal says so: the stream itself reporting trouble
+// (isStale), or -- the defect this guards against -- a stream that keeps
+// emitting events on schedule while the measurement inside them stops
+// advancing, which a connectivity-only check would never notice.
+function isMeasurementStale(state) {
+  if (isStale) return true;
+  if (!hasMeasurement(state)) return true;
+  return Date.now() / 1000 - state.ts > MEASUREMENT_STALE_AFTER_SECONDS;
+}
+
+function renderNoMeasurement(state) {
+  el("verdict-icon").textContent = "";
+  el("verdict-word").textContent = translate("ui.state.no_measurement");
+  el("verdict-sentence").textContent = translate("ui.state.no_measurement.detail");
+  el("score").textContent = "—";
+  el("findings").textContent = "";
+  el("raw").textContent = JSON.stringify(state, null, 2);
+}
+
 export function render(state) {
   lastState = state;
+  if (!hasMeasurement(state)) {
+    renderNoMeasurement(state);
+    markFreshness(true);
+    return;
+  }
+
   const severity = state.severity || "OK";
   el("verdict-icon").textContent = translate(`severity.${severity}.icon`);
   el("verdict-word").textContent = translate(`severity.${severity}.word`);
@@ -146,13 +212,10 @@ export function render(state) {
   }
 
   el("raw").textContent = JSON.stringify(state, null, 2);
-  markFreshness(isStale);
+  markFreshness(isMeasurementStale(state));
 }
 
 function markFreshness(stale) {
-  // While stale, the banner must keep showing the last real update time,
-  // never the timestamp of whatever just got (re)painted — a locale
-  // switch during an outage must repaint the stale message, not erase it.
   if (interfaceTextUnavailable) {
     // The catalogue never loaded, so translate() has nothing to return
     // but "". If the SSE stream still comes up despite that (a plausible
@@ -161,10 +224,17 @@ function markFreshness(stale) {
     return;
   }
   const zone = el("freshness");
-  const milliseconds = stale ? lastUpdate : lastState.ts * 1000;
-  const time = timeFormat.format(new Date(milliseconds));
   zone.classList.toggle("stale", stale);
   document.body.classList.toggle("stale", stale);
+  if (!hasMeasurement(lastState)) {
+    zone.textContent = translate("ui.state.no_measurement.detail");
+    return;
+  }
+  // Always the timestamp of the actual last measurement, never the moment
+  // this banner happened to (re)paint -- a locale switch, or a stream that
+  // keeps ticking over a wedged collector, must not manufacture freshness
+  // that was never there.
+  const time = timeFormat.format(new Date(lastState.ts * 1000));
   zone.textContent = translate(
     stale ? "ui.freshness.stale" : "ui.freshness.live", { time });
 }
@@ -192,12 +262,15 @@ function connect() {
   setInterval(() => {
     if (Date.now() - lastUpdate > STALE_AFTER_MS) {
       isStale = true;
-      markFreshness(true);
     }
+    // Re-evaluated every tick, not only when the stream just went down:
+    // the payload can go stale on its own between SSE events.
+    markFreshness(isMeasurementStale(lastState));
   }, 5000);
 }
 
 async function start() {
+  adoptTokenFromUrl();
   el("mode-simple").addEventListener("click", () => switchMode("simple"));
   el("mode-expert").addEventListener("click", () => switchMode("expert"));
   el("locale").addEventListener("change", (event) =>
@@ -207,7 +280,7 @@ async function start() {
     fallback = await loadCatalogue(FALLBACK_LOCALE);
     await setLocale(pickLocale());
     try {
-      render(await (await fetch("/api/now")).json());
+      render(await (await fetch("/api/now", { headers: authHeaders() })).json());
     } catch (error) {
       console.warn("initial state unavailable", error);
     }

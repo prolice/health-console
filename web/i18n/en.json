@@ -9,6 +9,8 @@
   "ui.freshness.stale": "Data frozen since {time} · reconnecting…",
   "ui.probe.unavailable": "Measurement unavailable: {probe}",
   "ui.expert.placeholder": "Expert mode arrives in plan 2.",
+  "ui.state.no_measurement": "No measurement yet",
+  "ui.state.no_measurement.detail": "The console has not completed its first measurement yet. This should only take a few seconds.",
 
   "severity.OK.word": "All good",
   "severity.OK.icon": "●",

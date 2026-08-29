@@ -156,5 +156,17 @@ class TestDepth(SchedulerCase):
         self.assertEqual(self.scheduler.state()["depth_days"], 0.0)
 
 
+class TestEmptyState(SchedulerCase):
+    def test_state_before_any_tick_is_not_a_measurement(self):
+        # A reader must be able to tell "no measurement has happened yet"
+        # apart from a real 100/OK reading -- a zero or a fixed "OK" here
+        # would be exactly the reassuring lie this console refuses to tell.
+        state = self.scheduler.state()
+        self.assertIsNone(state["ts"])
+        self.assertIsNone(state["score"])
+        self.assertIsNone(state["severity"])
+        self.assertEqual(state["findings"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

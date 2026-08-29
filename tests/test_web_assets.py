@@ -140,6 +140,24 @@ class TestApp(unittest.TestCase):
             self.js, r"try\s*\{[^}]*loadCatalogue\(",
             "loadCatalogue is not called inside a try block")
 
+    def test_freshness_considers_measurement_age_not_just_stream_state(self):
+        # The original defect: markFreshness(isStale) re-emitted every 2s
+        # whether or not scheduler.state() was still advancing, so a wedged
+        # collector behind a healthy stream was shown as perpetually "up to
+        # date". Freshness must also be a function of state.ts.
+        self.assertIn("MEASUREMENT_STALE_AFTER_SECONDS", self.js)
+        self.assertNotRegex(
+            self.js, r"markFreshness\(\s*isStale\s*\)",
+            "markFreshness is driven only by stream connectivity, "
+            "ignoring state.ts")
+
+    def test_no_measurement_state_is_rendered_distinctly(self):
+        # EMPTY_STATE (ts=None, score=None) must never be shown as a score
+        # or a verdict: it is the absence of a measurement, not a good one.
+        self.assertIn("hasMeasurement", self.js)
+        self.assertIn("ui.state.no_measurement", self.js)
+        self.assertIn("renderNoMeasurement", self.js)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ import json
 import secrets
 import threading
 import time
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -53,6 +54,9 @@ FALLBACK_ERROR_CODES = {
 }
 
 
+SESSION_COOKIE_NAME = "health_token"
+
+
 def is_loopback(addr: str) -> bool:
     try:
         return ipaddress.ip_address(addr).is_loopback
@@ -70,6 +74,29 @@ def authorise(client_ip: str, presented: str | None, cfg: Config) -> bool:
     if not cfg.token or not presented:
         return False
     return hmac.compare_digest(cfg.token, presented)
+
+
+def cookie_token(header_value: str | None) -> str | None:
+    """The health_token cookie value, or None for anything else.
+
+    A malformed Cookie header must never raise: it would take the whole
+    request down over a header this process does not control.
+    """
+    if not header_value:
+        return None
+    jar = cookies.SimpleCookie()
+    try:
+        jar.load(header_value)
+    except cookies.CookieError:
+        return None
+    morsel = jar.get(SESSION_COOKIE_NAME)
+    return morsel.value if morsel else None
+
+
+def session_cookie_header(token: str) -> str:
+    # No Secure flag: this is plain HTTP on a LAN, and Secure would make the
+    # browser never send the cookie back over it.
+    return f"{SESSION_COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/"
 
 
 def make_server(cfg: Config, scheduler,
@@ -130,21 +157,40 @@ def make_server(cfg: Config, scheduler,
             self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"),
                        "", {"Connection": "close"})
 
-        def _authorised(self, query) -> bool:
-            # Preferred: the X-Health-Token header. Fallback: ?k=<token>,
+        def _authorised(self, query) -> tuple[bool, str | None]:
+            # In order of preference: the X-Health-Token header; ?k=<token>,
             # which exists only so a phone opening a shared or bookmarked
             # link can authenticate -- plain navigation has no way to set a
-            # header. This is a deliberate trade-off: log_message() above
-            # keeps the token out of this process's own access log, and
+            # header; then the health_token session cookie set by an
+            # earlier ?k= handoff (see do_GET). log_message() above keeps
+            # the token out of this process's own access log, and
             # Referrer-Policy: no-referrer keeps it out of cross-navigation
             # Referer headers, but neither reaches browser history,
             # bookmarks, or an intermediary's own logs (LAN router, proxy,
-            # connection tracking).
-            presented = (self.headers.get("X-Health-Token")
-                         or query.get("k", [None])[0])
-            return authorise(self.client_address[0], presented, cfg)
+            # connection tracking) -- which is why a successful ?k= request
+            # immediately hands off to a cookie instead of relying on the
+            # query string for every subsequent request.
+            header_token = self.headers.get("X-Health-Token")
+            query_token = query.get("k", [None])[0]
+            presented = header_token
+            if presented is None:
+                presented = query_token
+            if presented is None:
+                presented = cookie_token(self.headers.get("Cookie"))
+            client_ip = self.client_address[0]
+            ok = authorise(client_ip, presented, cfg)
+            # Only hand off when the query parameter is actually what
+            # authorised this request -- not on loopback (which needs no
+            # token at all) and not when a header already did the job.
+            handoff = (query_token
+                       if ok and header_token is None
+                       and query_token is not None
+                       and not is_loopback(client_ip)
+                       else None)
+            return ok, handoff
 
-        def _serve_file(self, relative: str):
+        def _serve_file(self, relative: str,
+                        extra_headers: dict[str, str] | None = None):
             target = (web_dir / relative).resolve()
             try:
                 target.relative_to(web_dir.resolve())
@@ -154,9 +200,10 @@ def make_server(cfg: Config, scheduler,
                 return self._error(404, "file_not_found", relative)
             self._send(200, target.read_bytes(),
                        CONTENT_TYPES.get(target.suffix,
-                                         "application/octet-stream"))
+                                         "application/octet-stream"),
+                       extra_headers)
 
-        def _history(self, query):
+        def _history(self, query, extra_headers: dict[str, str] | None = None):
             metric = query.get("metric", [None])[0]
             window = query.get("range", ["24h"])[0]
             if not metric:
@@ -177,9 +224,9 @@ def make_server(cfg: Config, scheduler,
                 # chart would suggest a collection failure when the history
                 # has simply just begun.
                 "depth_days": round(depth / 86_400, 2),
-            })
+            }, extra_headers)
 
-        def _stream(self):
+        def _stream(self, extra_headers: dict[str, str] | None = None):
             with Handler._stream_lock:
                 if Handler._stream_count >= MAX_STREAMS:
                     return self._error(503, "too_many_streams", str(MAX_STREAMS))
@@ -195,6 +242,11 @@ def make_server(cfg: Config, scheduler,
                 self.send_header("Connection", "close")
                 self.close_connection = True
                 for name, value in SECURITY_HEADERS.items():
+                    self.send_header(name, value)
+                # EventSource cannot set a custom header, so a stream opened
+                # straight from a ?k= link relies on this cookie handoff --
+                # it is the primary mechanism, not a belt-and-braces extra.
+                for name, value in (extra_headers or {}).items():
                     self.send_header(name, value)
                 self.end_headers()
                 while True:
@@ -214,19 +266,27 @@ def make_server(cfg: Config, scheduler,
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
 
-            if not self._authorised(query):
+            authorised, handoff = self._authorised(query)
+            if not authorised:
                 return self._error(401, "token_required", "")
+            # A request that only authorised because of ?k= hands the token
+            # off to a cookie on its own response, so every subsequent
+            # request from the same browser -- static subresources, /api/now,
+            # /api/stream -- is authorised without the query string, which
+            # plain <link>/<script>/fetch/EventSource requests never carry.
+            extra = ({"Set-Cookie": session_cookie_header(handoff)}
+                     if handoff else None)
 
             if parsed.path == "/":
-                return self._serve_file("index.html")
+                return self._serve_file("index.html", extra)
             if parsed.path.startswith("/static/"):
-                return self._serve_file(parsed.path[len("/static/"):])
+                return self._serve_file(parsed.path[len("/static/"):], extra)
             if parsed.path == "/api/now":
-                return self._json(200, scheduler.state())
+                return self._json(200, scheduler.state(), extra)
             if parsed.path == "/api/history":
-                return self._history(query)
+                return self._history(query, extra)
             if parsed.path == "/api/stream":
-                return self._stream()
+                return self._stream(extra)
             return self._error(404, "unknown_route", parsed.path)
 
     server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)

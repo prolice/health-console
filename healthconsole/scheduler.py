@@ -40,7 +40,11 @@ SUSTAIN_RULES: dict[str, tuple[str, float, float, float]] = {
 }
 
 EMPTY_STATE: dict = {
-    "ts": 0.0, "score": 100, "breakdown": [], "severity": "OK",
+    # None, not a reassuring 0.0/100/"OK": no tick has happened yet, so there
+    # is no measurement to report. A consumer that treats this as a real,
+    # fresh, all-clear reading (the defect this guards against) must instead
+    # recognise the absence and say so -- see web/app.js's hasMeasurement().
+    "ts": None, "score": None, "breakdown": [], "severity": None,
     "findings": [], "probes": {}, "depth_days": 0.0,
 }
 

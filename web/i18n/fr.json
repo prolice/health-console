@@ -9,6 +9,8 @@
   "ui.freshness.stale": "Données figées depuis {time} · reconnexion…",
   "ui.probe.unavailable": "Mesure indisponible : {probe}",
   "ui.expert.placeholder": "Le mode Expert arrive au plan 2.",
+  "ui.state.no_measurement": "Aucune mesure pour l'instant",
+  "ui.state.no_measurement.detail": "La console n'a pas encore terminé sa première mesure. Cela ne devrait prendre que quelques secondes.",
 
   "severity.OK.word": "Tout va bien",
   "severity.OK.icon": "●",

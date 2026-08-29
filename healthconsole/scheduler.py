@@ -21,7 +21,9 @@ from dataclasses import asdict
 from healthconsole import rules
 from healthconsole.config import Config
 from healthconsole.findings import Severity
-from healthconsole.probes import FAST, EvalContext, load_probes, unavailable
+from healthconsole.probes import (
+    FAST, EvalContext, describe_exception, load_probes, unavailable,
+)
 from healthconsole.probes import network as network_probe
 from healthconsole.ring import Ring
 from healthconsole.store import Store
@@ -69,6 +71,14 @@ class Scheduler:
         self._net_previous: dict = {}
         self._net_previous_ts: float | None = None
         self._state: dict = dict(EMPTY_STATE)
+        # available_depth_seconds() is a full-table MIN(ts) scan the
+        # (key_id, ts) index cannot serve -- measured at ~29ms on two days
+        # of data, which tick()'s 2s budget cannot absorb (~1.4% of a core
+        # continuously, for a field the front end does not even read).
+        # Computed once here so a fresh process does not under-report the
+        # depth actually on disk, then refreshed only on the much rarer
+        # write cadence, in flush().
+        self._depth_days_cached: float = self._compute_depth_days()
 
     # --- fast cadence -------------------------------------------------
 
@@ -85,7 +95,7 @@ class Scheduler:
             except Exception as exc:              # noqa: BLE001
                 # A failing probe never brings the others down.
                 samples[probe.NAME] = unavailable(
-                    f"probe failed: {type(exc).__name__}: {exc}")
+                    f"probe failed: {describe_exception(exc)}")
 
         measurements.update(self._network_rates(samples, now))
         for key, value in measurements.items():
@@ -112,9 +122,9 @@ class Scheduler:
                 # and would hide the collected data from Expert mode.
                 sample = samples.get(probe.NAME)
                 if isinstance(sample, dict):
-                    sample["eval_error"] = f"{type(exc).__name__}: {exc}"
+                    sample["eval_error"] = describe_exception(exc)
                 print(f"{probe.NAME}: evaluate() failed: "
-                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                      f"{describe_exception(exc)}", file=sys.stderr)
                 continue
 
         self._state = {
@@ -124,7 +134,7 @@ class Scheduler:
             "severity": worst(findings).name,
             "findings": [self._serialise(finding) for finding in findings],
             "probes": samples,
-            "depth_days": self._depth_days(now),
+            "depth_days": self._depth_days_cached,
         }
         return self._state
 
@@ -147,7 +157,8 @@ class Scheduler:
         data["severity"] = Severity(finding.severity).name
         return data
 
-    def _depth_days(self, now: float) -> float:
+    def _compute_depth_days(self, now: float | None = None) -> float:
+        now = self.clock() if now is None else now
         seconds = self.store.available_depth_seconds("metric", int(now))
         return round(seconds / 86_400, 2)
 
@@ -165,6 +176,11 @@ class Scheduler:
                 continue
             average, low, high = aggregated
             rows.append((key, average, low, high))
+        # Refreshed on every flush, whether or not this window had a point
+        # to write: depth still needs to track a prune that happened since
+        # the last flush, and the write cadence (default 30s) is cheap
+        # enough for the MIN(ts) scan that tick()'s 2s cadence is not.
+        self._depth_days_cached = self._compute_depth_days(now)
         if not rows:
             return 0
         self.store.write_metrics(int(now), rows)

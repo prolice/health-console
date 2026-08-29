@@ -19,6 +19,8 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.freshness.live",
     "ui.freshness.stale",
     "ui.probe.unavailable",
+    "ui.probe.unavailable.why",
+    "ui.probe.unavailable.raw_prefix",
     "ui.expert.placeholder",
     "ui.state.no_measurement",
     "ui.state.no_measurement.detail",
@@ -110,6 +112,27 @@ class TestPlaceholders(unittest.TestCase):
                         f"{used - set(allowed)}, which the probe never emits")
 
 
+class TestFindingParamsAreShown(unittest.TestCase):
+    NUMERIC_FINDINGS = ("cpu.usage_high", "memory.pressure")
+
+    def test_every_declared_parameter_is_interpolated_somewhere(self):
+        # cpu.usage_high declared usage_pct/sustain_minutes and interpolated
+        # neither; memory.pressure declared available_bytes/available_pct/
+        # swap_used_bytes and showed only the percentage. A declared
+        # parameter that no template ever shows is data the user is denied.
+        for locale in locales():
+            catalogue = load(locale)
+            for finding_id in self.NUMERIC_FINDINGS:
+                used: set[str] = set()
+                for suffix in ("title", "why"):
+                    text = catalogue[f"finding.{finding_id}.{suffix}"]
+                    used |= set(PLACEHOLDER.findall(text))
+                self.assertEqual(
+                    used, set(FINDING_PARAMS[finding_id]),
+                    f"{locale}:finding.{finding_id} does not interpolate "
+                    f"every declared parameter {FINDING_PARAMS[finding_id]}")
+
+
 class TestNoJargonLeaksToSimpleMode(unittest.TestCase):
     JARGON = ("swap", "sysfs", "hwmon", "SMART", "psutil", "charge_full")
 
@@ -119,9 +142,16 @@ class TestNoJargonLeaksToSimpleMode(unittest.TestCase):
             for finding_id in sorted(FINDING_IDS):
                 for suffix in ("title", "why"):
                     text = catalogue[f"finding.{finding_id}.{suffix}"]
+                    # Strip placeholders before scanning: a declared
+                    # parameter name like {swap_used_bytes} never reaches
+                    # the reader -- it is replaced with a plausibility-
+                    # checked, formatted value (see memory.pressure) -- so
+                    # it is not jargon "leaking" into the prose a term
+                    # appearing only inside the author's own wording is.
+                    prose = PLACEHOLDER.sub("", text)
                     for term in self.JARGON:
                         self.assertNotIn(
-                            term, text,
+                            term, prose,
                             f"{locale}:finding.{finding_id}.{suffix} leaks "
                             f"'{term}' into Simple mode")
 

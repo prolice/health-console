@@ -11,7 +11,7 @@ from pathlib import Path
 from healthconsole import rules
 from healthconsole.findings import Finding, Severity
 from healthconsole.plausibility import sane
-from healthconsole.probes import FAST, EvalContext, unavailable
+from healthconsole.probes import FAST, EvalContext, describe_exception, unavailable
 
 NAME = "thermal"
 CADENCE = FAST
@@ -40,7 +40,8 @@ def collect() -> dict:
             if values:
                 zones[name] = max(values)
     except OSError as exc:
-        return unavailable(f"thermal sensors unreadable: {exc}")
+        return unavailable(
+            f"thermal sensors unreadable: {describe_exception(exc)}")
     if not zones:
         return unavailable("kernel exposes no thermal sensor")
     package = next((zones[hint] for hint in PACKAGE_HINTS if hint in zones), None)

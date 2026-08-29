@@ -8,6 +8,7 @@ interface.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 import time
@@ -18,7 +19,7 @@ from healthconsole.config import (
 )
 from healthconsole.ring import Ring
 from healthconsole.scheduler import Scheduler
-from healthconsole.server import WEB_DIR, make_server
+from healthconsole.server import WEB_DIR, generate_token, make_server
 from healthconsole.store import Store
 
 DATA_DIR = Path.home() / ".local" / "share" / "health-console"
@@ -101,6 +102,68 @@ def cmd_prune(cfg) -> int:
     return 0
 
 
+_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+_TOKEN_LINE_RE = re.compile(r"^\s*token\s*=")
+
+
+def _rotate_token(config_path: Path) -> str:
+    """Generate a new token and store it in `config_path`'s [server] section.
+
+    The project has no TOML writer, so this reads and rewrites the file as
+    text: it locates the [server] section (creating one at the end of the
+    file if absent) and replaces its `token = ...` line, or adds one, rather
+    than touching anything else a user may already have configured there.
+    """
+    token = generate_token()
+    lines = (config_path.read_text(encoding="utf-8").splitlines()
+             if config_path.exists() else [])
+
+    server_start = None
+    server_end = len(lines)
+    for index, line in enumerate(lines):
+        match = _SECTION_RE.match(line)
+        if not match:
+            continue
+        if server_start is not None:
+            server_end = index
+            break
+        if match.group(1).strip() == "server":
+            server_start = index
+
+    token_line = f'token = "{token}"'
+    if server_start is None:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.append("[server]")
+        lines.append(token_line)
+    else:
+        token_index = next(
+            (i for i in range(server_start + 1, server_end)
+             if _TOKEN_LINE_RE.match(lines[i])), None)
+        if token_index is None:
+            lines.insert(server_start + 1, token_line)
+        else:
+            lines[token_index] = token_line
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    config_path.chmod(0o600)
+    return token
+
+
+def cmd_token(cfg, config_path: Path, rotate: bool) -> int:
+    if not rotate:
+        if cfg.token:
+            print(cfg.token)
+        else:
+            print("No token is set.")
+            print("Run 'health-console token --rotate' to generate one.")
+        return 0
+    token = _rotate_token(config_path)
+    print(token)
+    return 0
+
+
 def _log_loop_error(exc: Exception) -> None:
     print(f"scheduler loop error: {type(exc).__name__}: {exc}",
           file=sys.stderr)
@@ -175,16 +238,19 @@ def cmd_run(cfg) -> int:
 
 
 COMMANDS = {"run": cmd_run, "config": cmd_config,
-            "status": cmd_status, "prune": cmd_prune}
+            "status": cmd_status, "prune": cmd_prune, "token": cmd_token}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="health-console", description="System health console.")
     parser.add_argument("command", nargs="?", choices=sorted(COMMANDS),
-                        help="run, config, status or prune")
+                        help="run, config, status, prune or token")
     parser.add_argument("--config", type=Path, default=None,
                         help="path to a configuration file")
+    parser.add_argument("--rotate", action="store_true",
+                        help="with the 'token' command, generate a new "
+                             "token and store it in the configuration file")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -204,4 +270,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command == "config":
         return cmd_config(cfg, config_path)
+    if args.command == "token":
+        return cmd_token(cfg, config_path, args.rotate)
     return COMMANDS[args.command](cfg)

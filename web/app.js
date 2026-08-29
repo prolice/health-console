@@ -26,6 +26,16 @@ let interfaceTextUnavailable = false;
 
 function el(id) { return document.getElementById(id); }
 
+// #verdict-word, #verdict-sentence, #score and #freshness sit inside two
+// aria-live="polite" regions and are repainted on every SSE event (every
+// 2s). Assigning textContent unconditionally makes a screen reader re-read
+// the whole verdict forever, even when nothing changed -- spec §10.2 asks
+// for live regions "without screen-reader chatter". Only actually writing
+// when the value changed keeps the live region silent the rest of the time.
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
 // A ?k=<token> link (shared or bookmarked) is the only way a plain
 // navigation can authenticate. The server hands that token off to a
 // session cookie on its response (see healthconsole/server.py), which
@@ -85,6 +95,22 @@ export function formatBytes(bytes) {
   let value = bytes;
   while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
   return `${numberFormat.format(value)} ${units[index]}`;
+}
+
+// Declared byte-valued finding parameters (healthconsole/findings.py's
+// FINDING_PARAMS) are formatted through formatBytes before interpolation,
+// never as a bare number of bytes -- spec §10.1 wants "441 GB left", not a
+// raw byte count or a percentage alone.
+const BYTE_FINDING_PARAMS = new Set(["available_bytes", "swap_used_bytes"]);
+
+function formatFindingParams(params) {
+  const formatted = {};
+  for (const [key, value] of Object.entries(params || {})) {
+    formatted[key] = (BYTE_FINDING_PARAMS.has(key) && typeof value === "number")
+      ? formatBytes(value)
+      : value;
+  }
+  return formatted;
 }
 
 async function loadCatalogue(target) {
@@ -171,9 +197,9 @@ function isMeasurementStale(state) {
 
 function renderNoMeasurement(state) {
   el("verdict-icon").textContent = "";
-  el("verdict-word").textContent = translate("ui.state.no_measurement");
-  el("verdict-sentence").textContent = translate("ui.state.no_measurement.detail");
-  el("score").textContent = "—";
+  setText(el("verdict-word"), translate("ui.state.no_measurement"));
+  setText(el("verdict-sentence"), translate("ui.state.no_measurement.detail"));
+  setText(el("score"), "—");
   el("findings").textContent = "";
   el("raw").textContent = JSON.stringify(state, null, 2);
 }
@@ -188,17 +214,18 @@ export function render(state) {
 
   const severity = state.severity || "OK";
   el("verdict-icon").textContent = translate(`severity.${severity}.icon`);
-  el("verdict-word").textContent = translate(`severity.${severity}.word`);
-  el("verdict-sentence").textContent = translate(`verdict.${severity}`);
-  el("score").textContent = state.score;
+  setText(el("verdict-word"), translate(`severity.${severity}.word`));
+  setText(el("verdict-sentence"), translate(`verdict.${severity}`));
+  setText(el("score"), String(state.score));
 
   const host = el("findings");
   host.textContent = "";
   for (const finding of state.findings || []) {
+    const params = formatFindingParams(finding.params);
     host.append(card(
       finding.severity,
-      translate(`finding.${finding.id}.title`, finding.params),
-      translate(`finding.${finding.id}.why`, finding.params)));
+      translate(`finding.${finding.id}.title`, params),
+      translate(`finding.${finding.id}.why`, params)));
   }
 
   // An unavailable probe is shown as unavailable, never as a reassuring zero.
@@ -206,9 +233,23 @@ export function render(state) {
   // succeeded) but carries eval_error, and that must not stay invisible.
   for (const [name, probe] of Object.entries(state.probes || {})) {
     if (probe.status === "ok" && !probe.eval_error) continue;
-    host.append(card("INFO",
+    const article = card("INFO",
       translate("ui.probe.unavailable", { probe: name }),
-      probe.reason || probe.eval_error || ""));
+      translate("ui.probe.unavailable.why"));
+    // probe.reason/eval_error is diagnostic material in English -- see
+    // healthconsole/probes/__init__.py's unavailable() -- never translated
+    // prose. It stays visible (hiding it would be its own dishonesty) but
+    // is rendered as a visually secondary line behind a translated lead-in,
+    // rather than as the card's whole explanation.
+    const raw = probe.reason || probe.eval_error || "";
+    if (raw) {
+      const detail = document.createElement("p");
+      detail.className = "raw-detail";
+      detail.textContent =
+        `${translate("ui.probe.unavailable.raw_prefix")} ${raw}`;
+      article.append(detail);
+    }
+    host.append(article);
   }
 
   el("raw").textContent = JSON.stringify(state, null, 2);
@@ -227,7 +268,7 @@ function markFreshness(stale) {
   zone.classList.toggle("stale", stale);
   document.body.classList.toggle("stale", stale);
   if (!hasMeasurement(lastState)) {
-    zone.textContent = translate("ui.state.no_measurement.detail");
+    setText(zone, translate("ui.state.no_measurement.detail"));
     return;
   }
   // Always the timestamp of the actual last measurement, never the moment
@@ -235,8 +276,8 @@ function markFreshness(stale) {
   // keeps ticking over a wedged collector, must not manufacture freshness
   // that was never there.
   const time = timeFormat.format(new Date(lastState.ts * 1000));
-  zone.textContent = translate(
-    stale ? "ui.freshness.stale" : "ui.freshness.live", { time });
+  setText(zone, translate(
+    stale ? "ui.freshness.stale" : "ui.freshness.live", { time }));
 }
 
 function switchMode(mode) {

@@ -7,7 +7,7 @@ import psutil
 from healthconsole import rules
 from healthconsole.findings import Finding, Severity
 from healthconsole.plausibility import sane
-from healthconsole.probes import FAST, EvalContext, unavailable
+from healthconsole.probes import FAST, EvalContext, describe_exception, unavailable
 
 NAME = "memory"
 CADENCE = FAST
@@ -25,7 +25,8 @@ def collect() -> dict:
             "swap_used": int(swap.used), "swap_total": int(swap.total),
         }
     except Exception as exc:                      # noqa: BLE001
-        return unavailable(f"cannot read memory state: {exc}")
+        return unavailable(
+            f"cannot read memory state: {describe_exception(exc)}")
 
 
 def metrics(sample: dict) -> dict[str, float]:

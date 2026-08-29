@@ -141,6 +141,12 @@ class TestHttp(unittest.TestCase):
             urllib.request.urlopen(request, timeout=5)
         self.assertEqual(ctx.exception.headers["Connection"], "close")
 
+    def test_handler_class_declares_a_connection_timeout(self):
+        # Without this, a client that walks off the LAN mid-request holds
+        # its thread -- and, for /api/stream, one of the MAX_STREAMS slots
+        # -- until TCP notices on its own, which may be never.
+        self.assertEqual(self.server.RequestHandlerClass.timeout, 30)
+
     def test_head_request_sends_headers_but_no_body(self):
         # http.client and urllib both hide a missing HEAD-body guard --
         # their HEAD-aware readers stop at the headers regardless of what
@@ -159,7 +165,9 @@ class TestHttp(unittest.TestCase):
             except socket.timeout:
                 pass
         raw = b"".join(chunks)
+        status_line, _, _ = raw.partition(b"\r\n")
         headers, _, body = raw.partition(b"\r\n\r\n")
+        self.assertIn(b"200", status_line)
         self.assertIn(b"Content-Length", headers)
         self.assertEqual(body, b"")
 

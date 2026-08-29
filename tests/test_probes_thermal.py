@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from healthconsole.findings import Severity
 from healthconsole.probes import EvalContext
@@ -50,6 +51,20 @@ class TestEvaluate(unittest.TestCase):
     def test_missing_package_temperature_is_silent(self):
         self.assertEqual(thermal.evaluate(
             {"status": "ok", "package_c": None, "zones": {}}, context()), [])
+
+
+class TestCollectFailureReason(unittest.TestCase):
+    def test_reason_includes_the_exception_type_even_when_str_is_empty(self):
+        class BlankOSError(OSError):
+            def __str__(self):
+                return ""
+
+        with mock.patch("healthconsole.probes.thermal.HWMON") as hwmon:
+            hwmon.glob.side_effect = BlankOSError()
+            sample = thermal.collect()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("BlankOSError", sample["reason"])
+        self.assertFalse(sample["reason"].rstrip().endswith(":"))
 
 
 if __name__ == "__main__":

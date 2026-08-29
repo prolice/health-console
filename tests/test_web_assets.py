@@ -158,6 +158,37 @@ class TestApp(unittest.TestCase):
         self.assertIn("ui.state.no_measurement", self.js)
         self.assertIn("renderNoMeasurement", self.js)
 
+    def test_byte_valued_finding_params_are_formatted_through_format_bytes(self):
+        # formatBytes was exported and called from nowhere: memory.pressure
+        # declares available_bytes/swap_used_bytes but only ever showed a
+        # percentage, the form spec §10.1 forbids ("9% of 481GB" rather
+        # than "441GB left").
+        self.assertIn("formatBytes(value)", self.js)
+        self.assertIn("BYTE_FINDING_PARAMS", self.js)
+        self.assertIn("formatFindingParams(finding.params)", self.js)
+
+    def test_probe_raw_reason_is_rendered_as_a_secondary_detail(self):
+        # The raw reason (English, diagnostic) must stay visible but must
+        # not be the card's whole explanation, and must sit behind a
+        # translated lead-in rather than standing alone untranslated.
+        self.assertIn("ui.probe.unavailable.why", self.js)
+        self.assertIn("ui.probe.unavailable.raw_prefix", self.js)
+        self.assertIn("raw-detail", self.js)
+
+    def test_live_regions_are_not_repainted_unless_the_value_changed(self):
+        # #verdict-word, #verdict-sentence, #score and #freshness sit in
+        # aria-live="polite" regions repainted on every SSE event (every
+        # 2s); assigning textContent unconditionally makes a screen reader
+        # re-read the whole verdict forever, even when nothing changed.
+        self.assertIn("function setText", self.js)
+        for direct in ('el("verdict-word").textContent =',
+                      'el("verdict-sentence").textContent =',
+                      'el("score").textContent =',
+                      "zone.textContent ="):
+            self.assertNotIn(
+                direct, self.js,
+                f"{direct} bypasses setText and re-announces unconditionally")
+
 
 if __name__ == "__main__":
     unittest.main()

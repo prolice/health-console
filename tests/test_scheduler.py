@@ -156,6 +156,42 @@ class TestDepth(SchedulerCase):
         self.assertEqual(self.scheduler.state()["depth_days"], 0.0)
 
 
+class TestDepthCaching(unittest.TestCase):
+    """available_depth_seconds() is a full-table MIN(ts) scan (~29ms
+    measured on two days of data) that tick()'s 2s cadence cannot absorb.
+    It must be computed at construction time and refreshed only by
+    flush() -- never recomputed by tick() itself."""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_a_fresh_scheduler_computes_depth_from_disk_immediately(self):
+        # state()'s depth_days is only refreshed by the next tick(), so the
+        # cache itself -- not state() -- is what proves this was computed
+        # eagerly rather than left at 0 until the first flush (up to
+        # store_seconds, 30s by default, after startup).
+        self.store.write_metrics(1000, [("cpu.usage", 1.0, 1.0, 1.0)])
+        scheduler = Scheduler(Config(), self.store, Ring(), probes=[],
+                              clock=lambda: 1000.0 + 86_400)
+        self.assertGreater(scheduler._depth_days_cached, 0.0)
+
+    def test_tick_alone_does_not_refresh_the_cache_but_flush_does(self):
+        scheduler = Scheduler(Config(), self.store, Ring(), probes=[])
+        scheduler.tick(now=1000.0)
+        self.assertEqual(scheduler.state()["depth_days"], 0.0)
+        # Written directly, bypassing the scheduler -- simulating history
+        # that was already on disk shifting further into the past.
+        self.store.write_metrics(1000, [("cpu.usage", 1.0, 1.0, 1.0)])
+        scheduler.tick(now=1000.0 + 86_400)
+        self.assertEqual(scheduler.state()["depth_days"], 0.0)
+        scheduler.flush(now=1000.0 + 86_400)
+        scheduler.tick(now=1000.0 + 86_400)
+        self.assertGreater(scheduler.state()["depth_days"], 0.0)
+
+
 class TestEmptyState(SchedulerCase):
     def test_state_before_any_tick_is_not_a_measurement(self):
         # A reader must be able to tell "no measurement has happened yet"

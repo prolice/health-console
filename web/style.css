@@ -74,6 +74,9 @@ body {
 .finding h2 { font-size: 1.05rem; margin: 0 0 0.35rem; }
 .finding p { margin: 0; color: var(--muted); }
 .finding .tag { font-weight: 700; font-size: 0.85rem; }
+/* Diagnostic material (a probe's raw, untranslated failure reason), kept
+   visible but visually secondary to the translated explanation above it. */
+.finding .raw-detail { margin-top: 0.5rem; font-size: 0.8rem; opacity: 0.8; }
 
 .severity-OK        { border-left-color: var(--ok); }
 .severity-OK .tag { color: var(--ok); }

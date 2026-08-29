@@ -45,3 +45,16 @@ def load_probes(cadence: str | None = None) -> list[ModuleType]:
 def unavailable(reason: str) -> dict:
     """`reason` is diagnostic material in English, not user-facing prose."""
     return {"status": "unavailable", "reason": reason}
+
+
+def describe_exception(exc: Exception) -> str:
+    """"TypeName: message", or just "TypeName" when str(exc) is empty.
+
+    Some exceptions (a handful of OSError subclasses; a bare
+    `raise SomeError()` with no message) have an empty str(). Always
+    appending ": {exc}" to a reason would then leave it ending in a bare
+    colon with nothing after it -- exactly the kind of half-sentence this
+    console's reasons must never show.
+    """
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__

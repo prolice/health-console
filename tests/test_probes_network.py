@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from healthconsole.probes import network
 
@@ -33,6 +34,19 @@ class TestCollectSmoke(unittest.TestCase):
         sample = network.collect()
         self.assertEqual(sample["status"], "ok")
         self.assertIn("lo", sample["counters"])
+
+
+class TestCollectFailureReason(unittest.TestCase):
+    def test_reason_includes_the_exception_type_even_when_str_is_empty(self):
+        class Blank(Exception):
+            def __str__(self):
+                return ""
+
+        with mock.patch("psutil.net_io_counters", side_effect=Blank("")):
+            sample = network.collect()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("Blank", sample["reason"])
+        self.assertFalse(sample["reason"].rstrip().endswith(":"))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from healthconsole.findings import Severity
 from healthconsole.probes import EvalContext
@@ -81,6 +82,19 @@ class TestCollectSmoke(unittest.TestCase):
         sample_data = memory.collect()
         self.assertEqual(sample_data["status"], "ok")
         self.assertGreater(sample_data["total"], 0)
+
+
+class TestCollectFailureReason(unittest.TestCase):
+    def test_reason_includes_the_exception_type_even_when_str_is_empty(self):
+        class Blank(Exception):
+            def __str__(self):
+                return ""
+
+        with mock.patch("psutil.virtual_memory", side_effect=Blank("")):
+            sample_data = memory.collect()
+        self.assertEqual(sample_data["status"], "unavailable")
+        self.assertIn("Blank", sample_data["reason"])
+        self.assertFalse(sample_data["reason"].rstrip().endswith(":"))
 
 
 if __name__ == "__main__":

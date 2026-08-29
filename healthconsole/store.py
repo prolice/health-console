@@ -7,6 +7,8 @@ Metric keys are normalised to integers: storing the string
 from __future__ import annotations
 
 import sqlite3
+import sys
+import time
 from pathlib import Path
 
 SCHEMA = """
@@ -45,11 +47,44 @@ ALL_TABLES = METRIC_TABLES + ("metric_key", "snapshot", "event", "action_run")
 class Store:
     def __init__(self, path: Path | str) -> None:
         self.path = str(path)
+        self._key_cache: dict[str, int] = {}
+        try:
+            self._connect()
+        except sqlite3.DatabaseError as exc:
+            # Spec §13: "Database corrupt -> recreated, incident logged --
+            # history is valuable, not vital." A laptop losing power
+            # mid-write is the ordinary case here, not an edge case: this
+            # must not take the whole console down with it. ":memory:" has
+            # no file to quarantine and cannot suffer this in practice, so
+            # it is left to raise normally.
+            if self.path == ":memory:":
+                raise
+            self._quarantine_corrupt_file(exc)
+            self._connect()
+
+    def _connect(self) -> None:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        # A corrupt file is not always detected by connect() itself -- SQLite
+        # opens it lazily, so the first real access (this PRAGMA) is what
+        # actually surfaces the error.
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
-        self._key_cache: dict[str, int] = {}
         self._create_schema()
+
+    def _quarantine_corrupt_file(self, exc: Exception) -> None:
+        try:
+            self.conn.close()
+        except Exception:                          # noqa: BLE001
+            pass
+        quarantined = f"{self.path}.corrupt-{int(time.time())}"
+        print(f"health-console: database at {self.path} is corrupt "
+              f"({type(exc).__name__}: {exc}); moving it aside to "
+              f"{quarantined} and starting a fresh database. Past history "
+              f"is lost; collection continues.", file=sys.stderr)
+        for suffix in ("", "-wal", "-shm"):
+            source = Path(self.path + suffix)
+            if source.exists():
+                source.rename(quarantined + suffix)
 
     def _create_schema(self) -> None:
         self.conn.executescript(SCHEMA)

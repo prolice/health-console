@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from healthconsole.findings import FINDING_IDS, Severity
 from healthconsole.probes import FAST, EvalContext, load_probes
@@ -93,6 +94,22 @@ class TestCollectSmoke(unittest.TestCase):
         self.assertEqual(sample["status"], "ok")
         self.assertGreaterEqual(sample["cores"], 1)
         self.assertIsInstance(sample["usage_pct"], float)
+
+
+class TestCollectFailureReason(unittest.TestCase):
+    def test_reason_includes_the_exception_type_even_when_str_is_empty(self):
+        # A French Simple-mode reader would otherwise see the probe's
+        # translated "unavailable" card followed by a bare, empty English
+        # sentence with nothing diagnostic in it at all.
+        class Blank(Exception):
+            def __str__(self):
+                return ""
+
+        with mock.patch("os.getloadavg", side_effect=Blank("")):
+            sample = cpu.collect()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("Blank", sample["reason"])
+        self.assertFalse(sample["reason"].rstrip().endswith(":"))
 
 
 if __name__ == "__main__":

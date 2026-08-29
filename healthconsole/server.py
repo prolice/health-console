@@ -104,6 +104,11 @@ def make_server(cfg: Config, scheduler,
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # Without this, a client that walks off the LAN (a phone losing
+        # wifi mid-request) holds its thread -- and, for /api/stream, one
+        # of the MAX_STREAMS slots -- until TCP notices on its own, which
+        # for a half-open connection can be effectively never.
+        timeout = 30
         _stream_lock = threading.Lock()
         _stream_count = 0
 
@@ -288,6 +293,13 @@ def make_server(cfg: Config, scheduler,
             if parsed.path == "/api/stream":
                 return self._stream(extra)
             return self._error(404, "unknown_route", parsed.path)
+
+        # Without this, BaseHTTPRequestHandler answers any HEAD request with
+        # send_error(501) before do_GET ever runs -- routing, auth and the
+        # 200 status a HEAD is supposed to mirror never happen at all. _send
+        # already omits the body for self.command == "HEAD", so sharing
+        # do_GET's routing is all that is needed.
+        do_HEAD = do_GET
 
     server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)
     server.daemon_threads = True

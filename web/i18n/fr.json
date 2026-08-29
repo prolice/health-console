@@ -8,6 +8,8 @@
   "ui.freshness.live": "À jour · dernière mesure à {time}",
   "ui.freshness.stale": "Données figées depuis {time} · reconnexion…",
   "ui.probe.unavailable": "Mesure indisponible : {probe}",
+  "ui.probe.unavailable.why": "Cette mesure n'a pas pu être effectuée pour le moment.",
+  "ui.probe.unavailable.raw_prefix": "Détail technique :",
   "ui.expert.placeholder": "Le mode Expert arrive au plan 2.",
   "ui.state.no_measurement": "Aucune mesure pour l'instant",
   "ui.state.no_measurement.detail": "La console n'a pas encore terminé sa première mesure. Cela ne devrait prendre que quelques secondes.",
@@ -26,11 +28,11 @@
   "verdict.ATTENTION": "Quelque chose mérite votre attention.",
   "verdict.URGENT": "Une action est nécessaire rapidement.",
 
-  "finding.cpu.usage_high.title": "Votre ordinateur travaille beaucoup depuis un moment",
-  "finding.cpu.usage_high.why": "Un programme sollicite fortement la machine depuis plusieurs minutes. C'est normal pendant un traitement lourd, mais si cela dure sans raison, l'ordinateur risque de chauffer et de ralentir.",
+  "finding.cpu.usage_high.title": "Votre ordinateur travaille beaucoup depuis {sustain_minutes} minutes",
+  "finding.cpu.usage_high.why": "Il utilise {usage_pct} % de sa puissance de calcul depuis un moment. C'est normal pendant un traitement lourd, mais si cela dure sans raison, l'ordinateur risque de chauffer et de ralentir.",
 
-  "finding.memory.pressure.title": "La mémoire est presque pleine ({available_pct} % de libre)",
-  "finding.memory.pressure.why": "L'ordinateur a commencé à déplacer des données vers le disque, beaucoup plus lent que la mémoire. Fermer quelques applications devrait le rendre à nouveau réactif.",
+  "finding.memory.pressure.title": "La mémoire est presque pleine : il ne reste que {available_bytes} ({available_pct} % de libre)",
+  "finding.memory.pressure.why": "L'ordinateur a commencé à déplacer des données vers le disque ({swap_used_bytes} jusqu'à présent), bien plus lent que la mémoire. Fermer quelques applications devrait le rendre à nouveau réactif.",
 
   "finding.thermal.high.title": "Votre ordinateur chauffe depuis un moment ({temperature_c} °C)",
   "finding.thermal.high.why": "La chaleur dure depuis plusieurs minutes. Si cela se répète souvent, le ventilateur est probablement encrassé : un dépoussiérage rallonge la vie de la machine.",

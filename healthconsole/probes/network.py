@@ -10,7 +10,7 @@ import psutil
 
 from healthconsole.findings import Finding
 from healthconsole.plausibility import sane
-from healthconsole.probes import FAST, EvalContext, unavailable
+from healthconsole.probes import FAST, EvalContext, describe_exception, unavailable
 
 NAME = "network"
 CADENCE = FAST
@@ -31,7 +31,8 @@ def collect() -> dict:
         return {"status": "ok", "counters": counters,
                 "addresses": addresses, "up": up}
     except Exception as exc:                      # noqa: BLE001
-        return unavailable(f"cannot read network state: {exc}")
+        return unavailable(
+            f"cannot read network state: {describe_exception(exc)}")
 
 
 def rates(previous: dict, current: dict, dt: float) -> dict[str, float]:

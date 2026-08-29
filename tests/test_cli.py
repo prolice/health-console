@@ -64,6 +64,84 @@ class TestCommands(unittest.TestCase):
         self.assertIn("usage", output.lower())
 
 
+class TestToken(unittest.TestCase):
+    """generate_token() previously had no way to reach a real config: there
+    was no `token` command at all, and `bind` defaulting to 0.0.0.0 with no
+    way to obtain a token meant a LAN client had no way in.
+    """
+
+    def run_cli(self, *args):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = main(list(args))
+        return code, out.getvalue()
+
+    def temp_config_path(self):
+        return os.path.join(tempfile.mkdtemp(), "config.toml")
+
+    def test_no_token_configured_says_so_and_how_to_create_one(self):
+        code, output = self.run_cli(
+            "--config", self.temp_config_path(), "token")
+        self.assertEqual(code, 0)
+        self.assertIn("no token", output.lower())
+        self.assertIn("--rotate", output)
+
+    def test_configured_token_is_printed(self):
+        path = self.temp_config_path()
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('[server]\ntoken = "s3cr3t"\n')
+        code, output = self.run_cli("--config", path, "token")
+        self.assertEqual(code, 0)
+        self.assertIn("s3cr3t", output)
+
+    # --rotate is tested only against a temporary path, never the user's
+    # real ~/.config/health-console/config.toml.
+
+    def test_rotate_creates_the_file_and_prints_the_token(self):
+        path = self.temp_config_path()
+        self.assertFalse(os.path.exists(path))
+        code, output = self.run_cli(
+            "--config", path, "token", "--rotate")
+        self.assertEqual(code, 0)
+        printed = output.strip()
+        self.assertGreaterEqual(len(printed), 43)
+        self.assertTrue(os.path.exists(path))
+        # A subsequent plain `token` read must see exactly what was stored.
+        _, second_output = self.run_cli("--config", path, "token")
+        self.assertIn(printed, second_output)
+
+    def test_rotate_sets_restrictive_file_permissions(self):
+        path = self.temp_config_path()
+        self.run_cli("--config", path, "token", "--rotate")
+        mode = os.stat(path).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_rotate_preserves_other_settings_already_in_the_file(self):
+        path = self.temp_config_path()
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(
+                '[server]\nbind = "127.0.0.1"\nport = 9001\n'
+                '[retention]\nraw_days = 5\n')
+        code, output = self.run_cli("--config", path, "token", "--rotate")
+        self.assertEqual(code, 0)
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn('bind = "127.0.0.1"', text)
+        self.assertIn("port = 9001", text)
+        self.assertIn("raw_days = 5", text)
+        self.assertIn(output.strip(), text)
+
+    def test_rotate_replaces_an_existing_token_rather_than_duplicating_it(self):
+        path = self.temp_config_path()
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('[server]\ntoken = "old-token"\n')
+        self.run_cli("--config", path, "token", "--rotate")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertNotIn("old-token", text)
+        self.assertEqual(text.count("token ="), 1)
+
+
 class _FakeScheduler:
     """A scheduler stand-in that records calls and can be told to raise.
 

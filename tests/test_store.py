@@ -1,4 +1,9 @@
+import glob
+import io
+import os
+import tempfile
 import unittest
+from contextlib import redirect_stderr
 
 from healthconsole.store import Store
 
@@ -90,6 +95,51 @@ class TestIntrospection(StoreCase):
         self.store.write_metrics(500, [("a", 1.0, 1.0, 1.0)])
         self.store.write_metrics(100, [("a", 1.0, 1.0, 1.0)])
         self.assertEqual(self.store.oldest_ts("metric"), 100)
+
+
+class TestCorruptDatabase(unittest.TestCase):
+    """Spec §13: 'Database corrupt -> recreated, incident logged'. A laptop
+    losing power mid-write is the ordinary case this guards, not an edge
+    case, so a corrupt file must not take the whole console down."""
+
+    def setUp(self):
+        self.path = tempfile.mktemp(suffix=".sqlite3")
+        with open(self.path, "wb") as handle:
+            handle.write(os.urandom(4096))
+
+    def tearDown(self):
+        for path in glob.glob(self.path + "*"):
+            os.remove(path)
+
+    def test_corrupt_file_is_quarantined_and_a_fresh_database_opens(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            store = Store(self.path)
+        try:
+            self.assertEqual(store.count_rows("metric"), 0)
+            self.assertIn("corrupt", err.getvalue())
+        finally:
+            store.close()
+
+    def test_the_corrupt_file_is_preserved_alongside_the_new_one(self):
+        with redirect_stderr(io.StringIO()):
+            store = Store(self.path)
+        try:
+            quarantined = [p for p in glob.glob(self.path + ".corrupt-*")]
+            self.assertEqual(len(quarantined), 1)
+            with open(quarantined[0], "rb") as handle:
+                self.assertNotEqual(handle.read(16), b"SQLite format 3\x00")
+        finally:
+            store.close()
+
+    def test_writes_succeed_on_the_recreated_database(self):
+        with redirect_stderr(io.StringIO()):
+            store = Store(self.path)
+        try:
+            store.write_metrics(1000, [("cpu.usage", 1.0, 1.0, 1.0)])
+            self.assertEqual(store.count_rows("metric"), 1)
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":

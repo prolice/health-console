@@ -80,9 +80,11 @@ is not loopback). `Ctrl+C` stops it.
 Other commands:
 
 ```sh
-./bin/health-console config   # effective configuration and projected database size
-./bin/health-console status   # database location, size, and how much history it holds
-./bin/health-console prune    # apply the configured retention immediately
+./bin/health-console config          # effective configuration and projected database size
+./bin/health-console status          # database location, size, and how much history it holds
+./bin/health-console prune           # apply the configured retention immediately
+./bin/health-console token           # show the configured token, if any
+./bin/health-console token --rotate  # generate one and store it in config.toml
 ```
 
 Configuration lives at `~/.config/health-console/config.toml` (created on

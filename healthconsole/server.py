@@ -12,6 +12,7 @@ import ipaddress
 import json
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -27,6 +28,14 @@ CONTENT_TYPES = {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
 }
+
+RANGES: dict[str, int] = {"1h": 3600, "24h": 86_400,
+                          "7d": 604_800, "90d": 7_776_000}
+# Each stream holds a thread. Past this, the client falls back to polling.
+MAX_STREAMS = 8
+# Ranges up to this length are served from the raw table; longer ones from
+# the 5-minute aggregates.
+RAW_TABLE_MAX_SECONDS = 172_800
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'",
@@ -147,6 +156,59 @@ def make_server(cfg: Config, scheduler,
                        CONTENT_TYPES.get(target.suffix,
                                          "application/octet-stream"))
 
+        def _history(self, query):
+            metric = query.get("metric", [None])[0]
+            window = query.get("range", ["24h"])[0]
+            if not metric:
+                return self._error(400, "missing_parameter", "metric")
+            if window not in RANGES:
+                return self._error(400, "unknown_range",
+                                   ", ".join(RANGES))
+            now = int(time.time())
+            since = now - RANGES[window]
+            table = ("metric" if RANGES[window] <= RAW_TABLE_MAX_SECONDS
+                     else "metric_5m")
+            points = scheduler.store.read_series(metric, since, now, table=table)
+            depth = scheduler.store.available_depth_seconds(table, now)
+            return self._json(200, {
+                "metric": metric, "range": window, "table": table,
+                "points": [[ts, value] for ts, value in points],
+                # Always the depth actually available: a half-empty "90 days"
+                # chart would suggest a collection failure when the history
+                # has simply just begun.
+                "depth_days": round(depth / 86_400, 2),
+            })
+
+        def _stream(self):
+            with Handler._stream_lock:
+                if Handler._stream_count >= MAX_STREAMS:
+                    return self._error(503, "too_many_streams", str(MAX_STREAMS))
+                Handler._stream_count += 1
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                # Without Content-Length, HTTP/1.1 must close the connection at
+                # the end of the stream: otherwise the client cannot tell where
+                # the body ends and the next response is misframed.
+                self.send_header("Connection", "close")
+                self.close_connection = True
+                for name, value in SECURITY_HEADERS.items():
+                    self.send_header(name, value)
+                self.end_headers()
+                while True:
+                    payload = json.dumps(scheduler.state())
+                    self.wfile.write(b"event: state\n")
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    time.sleep(cfg.sampling.live_seconds)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                with Handler._stream_lock:
+                    Handler._stream_count -= 1
+
         # --- routing ----------------------------------------------
         def do_GET(self):
             parsed = urlparse(self.path)
@@ -161,6 +223,10 @@ def make_server(cfg: Config, scheduler,
                 return self._serve_file(parsed.path[len("/static/"):])
             if parsed.path == "/api/now":
                 return self._json(200, scheduler.state())
+            if parsed.path == "/api/history":
+                return self._history(query)
+            if parsed.path == "/api/stream":
+                return self._stream()
             return self._error(404, "unknown_route", parsed.path)
 
     server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)

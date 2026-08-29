@@ -46,20 +46,27 @@ def metrics(sample: dict) -> dict[str, float]:
 def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
     if sample.get("status") != "ok":
         return []
-    available_pct = sample.get("available_pct")
-    swap_used = sample.get("swap_used", 0)
+    # Check plausibility of all values before putting them in user-facing params.
+    available_pct = sane("percent", sample.get("available_pct"))
+    available = sane("bytes", sample.get("available"))
+    swap_used = sane("bytes", sample.get("swap_used", 0))
+    # We cannot honestly describe memory pressure without trustworthy figures.
+    if available_pct is None or available is None:
+        return []
+    if swap_used is None:
+        return []
     # Low "free" memory is Linux behaving normally: the cache fills whatever is
     # unused. Only active swapping signals real pressure.
-    if available_pct is None or available_pct >= rules.MEM_ATTENTION_AVAILABLE_PCT:
+    if available_pct >= rules.MEM_ATTENTION_AVAILABLE_PCT:
         return []
     if swap_used < rules.MEM_SWAP_ACTIVE_BYTES:
         return []
     return [Finding(
         id="memory.pressure",
         severity=Severity.ATTENTION,
-        params={"available_bytes": sample["available"],
+        params={"available_bytes": available,
                 "available_pct": available_pct,
                 "swap_used_bytes": swap_used},
-        detail=(f"available={sample['available'] / GIB:.2f} GiB "
+        detail=(f"available={available / GIB:.2f} GiB "
                 f"({available_pct:.1f}%) · swap_used={swap_used / GIB:.2f} GiB"),
     )]

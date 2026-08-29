@@ -1815,6 +1815,24 @@ class TestEvaluate(unittest.TestCase):
         self.assertEqual(
             cpu.evaluate({"status": "unavailable", "reason": "x"}, context()), [])
 
+    def test_implausible_usage_produces_no_finding_even_while_sustained(self):
+        # A breach sustained by earlier valid ticks does not justify emitting a
+        # finding with an implausible sensor value.
+        sample = {"status": "ok", "usage_pct": 4700.0, "freq_hz": 3.4e9,
+                  "load1": 0.3, "cores": 4}
+        self.assertEqual(
+            cpu.evaluate(sample, context({"cpu.usage_high": True})), [])
+
+    def test_sustained_load_produces_finding_with_checked_params(self):
+        # Verify the normal sustained-load case still produces a finding with
+        # plausibility-checked params.
+        findings = cpu.evaluate(self.BUSY, context({"cpu.usage_high": True}))
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.id, "cpu.usage_high")
+        self.assertEqual(finding.params["usage_pct"], 99.0)
+        self.assertIn("sustain_minutes", finding.params)
+
 
 class TestCollectSmoke(unittest.TestCase):
     def test_collect_returns_a_usable_sample(self):
@@ -1885,6 +1903,28 @@ class TestEvaluate(unittest.TestCase):
     def test_unavailable_sample_produces_no_finding(self):
         self.assertEqual(memory.evaluate(
             {"status": "unavailable", "reason": "x"}, context()), [])
+
+    def test_implausible_available_pct_produces_no_finding_even_with_active_swap(self):
+        # Implausible available_pct must not result in a finding, even if swap
+        # is genuinely active. We cannot honestly claim memory pressure with
+        # unchecked sensor data.
+        implausible = {"status": "ok", "total": 5 * GIB,
+                       "available": int(5 * GIB * 10 / 100),
+                       "available_pct": 4700.0, "swap_used": 512 * 1024 ** 2,
+                       "swap_total": 2 * GIB}
+        self.assertEqual(memory.evaluate(implausible, context()), [])
+
+    def test_low_memory_with_active_swap_produces_finding_with_checked_params(self):
+        # Verify the normal low-memory-with-swap case still produces a finding
+        # with plausibility-checked params.
+        findings = memory.evaluate(
+            sample(10.0, swap_used=512 * 1024 ** 2), context())
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.id, "memory.pressure")
+        self.assertIn("available_bytes", finding.params)
+        self.assertIn("available_pct", finding.params)
+        self.assertIn("swap_used_bytes", finding.params)
 
 
 class TestCollectSmoke(unittest.TestCase):
@@ -2010,7 +2050,13 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
         return []
     if not ctx.sustained.get("cpu.usage_high"):
         return []
-    usage = sample.get("usage_pct")
+    # Do not emit a finding with an unchecked sensor value. A breach that was
+    # sustained by earlier valid ticks does not justify displaying a wrong number.
+    usage = sane("percent", sample.get("usage_pct"))
+    if usage is None:
+        return []
+    load1 = sane("load", sample.get("load1"))
+    load1_str = f"{load1}" if load1 is not None else "unknown"
     return [Finding(
         id="cpu.usage_high",
         severity=Severity.ATTENTION,
@@ -2018,7 +2064,7 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
                 "sustain_minutes": rules.CPU_USAGE_SUSTAIN_SECONDS // 60},
         detail=(f"usage={usage:.0f}% sustained >= "
                 f"{rules.CPU_USAGE_SUSTAIN_SECONDS}s · "
-                f"load1={sample.get('load1')} over {sample.get('cores')} cores"),
+                f"load1={load1_str} over {sample.get('cores')} cores"),
     )]
 ```
 
@@ -2073,21 +2119,28 @@ def metrics(sample: dict) -> dict[str, float]:
 def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
     if sample.get("status") != "ok":
         return []
-    available_pct = sample.get("available_pct")
-    swap_used = sample.get("swap_used", 0)
+    # Check plausibility of all values before putting them in user-facing params.
+    available_pct = sane("percent", sample.get("available_pct"))
+    available = sane("bytes", sample.get("available"))
+    swap_used = sane("bytes", sample.get("swap_used", 0))
+    # We cannot honestly describe memory pressure without trustworthy figures.
+    if available_pct is None or available is None:
+        return []
+    if swap_used is None:
+        return []
     # Low "free" memory is Linux behaving normally: the cache fills whatever is
     # unused. Only active swapping signals real pressure.
-    if available_pct is None or available_pct >= rules.MEM_ATTENTION_AVAILABLE_PCT:
+    if available_pct >= rules.MEM_ATTENTION_AVAILABLE_PCT:
         return []
     if swap_used < rules.MEM_SWAP_ACTIVE_BYTES:
         return []
     return [Finding(
         id="memory.pressure",
         severity=Severity.ATTENTION,
-        params={"available_bytes": sample["available"],
+        params={"available_bytes": available,
                 "available_pct": available_pct,
                 "swap_used_bytes": swap_used},
-        detail=(f"available={sample['available'] / GIB:.2f} GiB "
+        detail=(f"available={available / GIB:.2f} GiB "
                 f"({available_pct:.1f}%) · swap_used={swap_used / GIB:.2f} GiB"),
     )]
 ```
@@ -2604,7 +2657,7 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
 In `healthconsole/probes/__init__.py`, change `PROBE_MODULES` to include all five probes:
 
 ```python
-# Later tasks extend this tuple as they add probe modules.
+# This is the complete set of probes for this plan.
 PROBE_MODULES: tuple[str, ...] = (
     "cpu", "memory", "thermal", "network", "battery",
 )

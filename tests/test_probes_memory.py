@@ -53,6 +53,28 @@ class TestEvaluate(unittest.TestCase):
         self.assertEqual(memory.evaluate(
             {"status": "unavailable", "reason": "x"}, context()), [])
 
+    def test_implausible_available_pct_produces_no_finding_even_with_active_swap(self):
+        # Implausible available_pct must not result in a finding, even if swap
+        # is genuinely active. We cannot honestly claim memory pressure with
+        # unchecked sensor data.
+        implausible = {"status": "ok", "total": 5 * GIB,
+                       "available": int(5 * GIB * 10 / 100),
+                       "available_pct": 4700.0, "swap_used": 512 * 1024 ** 2,
+                       "swap_total": 2 * GIB}
+        self.assertEqual(memory.evaluate(implausible, context()), [])
+
+    def test_low_memory_with_active_swap_produces_finding_with_checked_params(self):
+        # Verify the normal low-memory-with-swap case still produces a finding
+        # with plausibility-checked params.
+        findings = memory.evaluate(
+            sample(10.0, swap_used=512 * 1024 ** 2), context())
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.id, "memory.pressure")
+        self.assertIn("available_bytes", finding.params)
+        self.assertIn("available_pct", finding.params)
+        self.assertIn("swap_used_bytes", finding.params)
+
 
 class TestCollectSmoke(unittest.TestCase):
     def test_collect_returns_a_usable_sample(self):

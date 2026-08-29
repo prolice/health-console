@@ -50,7 +50,13 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
         return []
     if not ctx.sustained.get("cpu.usage_high"):
         return []
-    usage = sample.get("usage_pct")
+    # Do not emit a finding with an unchecked sensor value. A breach that was
+    # sustained by earlier valid ticks does not justify displaying a wrong number.
+    usage = sane("percent", sample.get("usage_pct"))
+    if usage is None:
+        return []
+    load1 = sane("load", sample.get("load1"))
+    load1_str = f"{load1}" if load1 is not None else "unknown"
     return [Finding(
         id="cpu.usage_high",
         severity=Severity.ATTENTION,
@@ -58,5 +64,5 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
                 "sustain_minutes": rules.CPU_USAGE_SUSTAIN_SECONDS // 60},
         detail=(f"usage={usage:.0f}% sustained >= "
                 f"{rules.CPU_USAGE_SUSTAIN_SECONDS}s · "
-                f"load1={sample.get('load1')} over {sample.get('cores')} cores"),
+                f"load1={load1_str} over {sample.get('cores')} cores"),
     )]

@@ -2,6 +2,7 @@
   "ui.title": "Console de santé",
   "ui.mode.simple": "Simple",
   "ui.mode.expert": "Expert",
+  "ui.mode.group": "Niveau de détail",
   "ui.language": "Langue",
   "ui.score.label": "Santé globale",
   "ui.freshness.live": "À jour · dernière mesure à {time}",

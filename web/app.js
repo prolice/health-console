@@ -77,6 +77,7 @@ function paintChrome() {
   el("app-title").textContent = translate("ui.title");
   el("mode-simple").textContent = translate("ui.mode.simple");
   el("mode-expert").textContent = translate("ui.mode.expert");
+  el("mode-group").setAttribute("aria-label", translate("ui.mode.group"));
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
   el("expert-placeholder").textContent = translate("ui.expert.placeholder");

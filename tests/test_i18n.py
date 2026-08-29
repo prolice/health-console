@@ -13,6 +13,7 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.title",
     "ui.mode.simple",
     "ui.mode.expert",
+    "ui.mode.group",
     "ui.language",
     "ui.score.label",
     "ui.freshness.live",

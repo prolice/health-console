@@ -3731,6 +3731,7 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.title",
     "ui.mode.simple",
     "ui.mode.expert",
+    "ui.mode.group",
     "ui.language",
     "ui.score.label",
     "ui.freshness.live",
@@ -3857,6 +3858,7 @@ Expected: FAIL — `FileNotFoundError: web/i18n/en.json`
   "ui.title": "Health Console",
   "ui.mode.simple": "Simple",
   "ui.mode.expert": "Expert",
+  "ui.mode.group": "Detail level",
   "ui.language": "Language",
   "ui.score.label": "Overall health",
   "ui.freshness.live": "Up to date · last reading at {time}",
@@ -3905,6 +3907,7 @@ Expected: FAIL — `FileNotFoundError: web/i18n/en.json`
   "ui.title": "Console de santé",
   "ui.mode.simple": "Simple",
   "ui.mode.expert": "Expert",
+  "ui.mode.group": "Niveau de détail",
   "ui.language": "Langue",
   "ui.score.label": "Santé globale",
   "ui.freshness.live": "À jour · dernière mesure à {time}",
@@ -4039,6 +4042,14 @@ class TestIndex(unittest.TestCase):
         self.assertIn('href="/static/style.css"', self.html)
         self.assertIn('src="/static/app.js"', self.html)
 
+    def test_no_hard_coded_aria_label(self):
+        # An aria-label baked into the markup is a user-facing string that
+        # cannot be translated: it must instead be set from the catalogue
+        # at render time, like every other text node.
+        match = re.search(r'aria-label="[^"]+"', self.html)
+        self.assertIsNone(
+            match, f"index.html hard-codes {match and match.group(0)}")
+
 
 class TestStyle(unittest.TestCase):
     def setUp(self):
@@ -4122,7 +4133,7 @@ render time, so no English wording is baked into the markup.
   <header class="bar">
     <h1 id="app-title"></h1>
     <div class="controls">
-      <div class="modes" role="tablist" aria-label="Detail level">
+      <div class="modes" id="mode-group" role="tablist">
         <button id="mode-simple" role="tab" aria-selected="true"></button>
         <button id="mode-expert" role="tab" aria-selected="false"></button>
       </div>
@@ -4341,6 +4352,7 @@ function paintChrome() {
   el("app-title").textContent = translate("ui.title");
   el("mode-simple").textContent = translate("ui.mode.simple");
   el("mode-expert").textContent = translate("ui.mode.expert");
+  el("mode-group").setAttribute("aria-label", translate("ui.mode.group"));
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
   el("expert-placeholder").textContent = translate("ui.expert.placeholder");

@@ -2,6 +2,7 @@
   "ui.title": "Health Console",
   "ui.mode.simple": "Simple",
   "ui.mode.expert": "Expert",
+  "ui.mode.group": "Detail level",
   "ui.language": "Language",
   "ui.score.label": "Overall health",
   "ui.freshness.live": "Up to date · last reading at {time}",

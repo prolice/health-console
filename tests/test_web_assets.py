@@ -46,6 +46,14 @@ class TestIndex(unittest.TestCase):
         self.assertIn('href="/static/style.css"', self.html)
         self.assertIn('src="/static/app.js"', self.html)
 
+    def test_no_hard_coded_aria_label(self):
+        # An aria-label baked into the markup is a user-facing string that
+        # cannot be translated: it must instead be set from the catalogue
+        # at render time, like every other text node.
+        match = re.search(r'aria-label="[^"]+"', self.html)
+        self.assertIsNone(
+            match, f"index.html hard-codes {match and match.group(0)}")
+
 
 class TestStyle(unittest.TestCase):
     def setUp(self):

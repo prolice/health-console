@@ -1,171 +1,175 @@
-# Health Console — Document de conception
+# Health Console — Design Document
 
-- **Date** : 2026-08-29
-- **Cible** : Ubuntu 26.04 LTS « Resolute Raccoon », kernel 7.0, poste unique (portable HP)
-- **Statut** : conception validée, prêt pour le plan d'implémentation
+- **Date:** 2026-08-29
+- **Target:** Ubuntu 26.04 LTS "Resolute Raccoon", kernel 7.0, single workstation (HP laptop)
+- **Status:** design approved, ready for implementation planning
+- **Project language:** English — code, comments, documentation and commit messages.
+  The user interface is translatable and ships with English and French (§11).
 
-## 1. Objectif
+## 1. Goal
 
-Une console web locale qui présente la santé de la machine, de l'OS et du matériel
-selon deux lectures assumées :
+A local web console that reports the health of the machine, the OS and the
+hardware through two deliberate readings:
 
-- **Mode Simple** — un verdict en français courant, compréhensible sans culture
-  technique, avec les actions correctives à portée de clic.
-- **Mode Expert** — la salle de contrôle complète : métriques brutes, courbes
-  d'historique, tables, journal d'audit.
+- **Simple mode** — a verdict in plain language, understandable without
+  technical background, with corrective actions one click away.
+- **Expert mode** — the full control room: raw metrics, history charts,
+  tables, audit log.
 
-La valeur du projet est dans l'**interprétation** des mesures, pas dans leur
-collecte. Afficher `77 °C` est trivial ; dire si c'est grave est le produit.
+The value of this project is the **interpretation** of measurements, not their
+collection. Displaying `77 °C` is trivial; saying whether that is bad is the
+product.
 
-## 2. Décisions validées
+## 2. Approved decisions
 
-| Sujet | Décision |
+| Topic | Decision |
 |---|---|
-| Usage | Tableau de bord live **et** historique long terme |
-| Périmètre | Noyau vital, santé matérielle, OS & maintenance, réseau & processus |
-| Privilèges | Règle `sudoers.d` ciblée, service en simple utilisateur |
-| Présentation | Deux modes explicites, commutateur Simple / Expert |
-| Réseau | Écoute LAN, protégée par jeton |
-| Stack | Python stdlib + `psutil` (apt) + SQLite ; front vanilla, sans build |
-| Actions | Catalogue fermé : mises à jour, ménage, services & système, disque & diagnostic |
+| Usage | Live dashboard **and** long-term history |
+| Scope | Core vitals, hardware health, OS & maintenance, network & processes |
+| Privileges | Narrow `sudoers.d` rule, service runs as an unprivileged user |
+| Presentation | Two explicit modes, Simple / Expert switch |
+| Network | Listens on the LAN, protected by a token |
+| Stack | Python stdlib + `psutil` (apt) + SQLite; vanilla front end, no build step |
+| Actions | Closed catalogue: updates, cleanup, services & system, disk & diagnostics |
+| Language | English by default, French available, catalogue-driven (§11) |
 
-## 3. Contraintes de plateforme (mesurées le 2026-08-29)
+## 3. Platform constraints (measured on 2026-08-29)
 
-Ces mesures ne sont pas décoratives : chacune contraint une décision.
+These measurements are not decoration: each one constrains a decision.
 
-- **PEP 668** — `/usr/lib/python3.14/EXTERNALLY-MANAGED` est présent. `pip install`
-  sur le Python système est refusé. `psutil` 7.1.0 et `jinja2` sont disponibles en
-  paquets apt ; ni Flask, ni FastAPI, ni uvicorn. → **Aucune dépendance hors apt,
-  aucun venv.**
-- **Ressources** — 4 cœurs, 5,2 Go de RAM dont ~1,5 Go réellement disponible.
-  → **Budget : < 60 Mo de RSS pour le service, < 2 % de CPU en moyenne, base par
-  défaut ≈ 32 Mo.** Un outil de santé qui dégrade la santé de la machine est un
-  échec de conception. C'est ce budget qui impose de dissocier la cadence
-  d'affichage (2 s, en mémoire) de la cadence d'écriture (30 s, en base) — voir §6.1.
-- **Matériel** — SSD Crucial MX300 489 Go (`/dev/sda`), GPU AMD Radeon HD 6730M,
-  batterie `BAT0`, souris Logitech avec batterie propre (`hidpp_battery_0`).
-- **Capteurs** — `lm-sensors` absent, mais `/sys/class/hwmon` expose `coretemp`,
-  `acpitz`, `radeon`, `hp`, `BAT0`, `AC`. → **Lecture directe de sysfs, pas de
-  dépendance à `sensors`.**
-- **Batterie** — `BAT0` n'expose **pas** `energy_full` mais la famille `charge_*`.
-  → **Les sondes lisent les deux conventions**, sinon la batterie apparaîtrait
-  « indisponible » sur cette machine précise.
-- **Le pilote batterie de cette machine renvoie des valeurs incohérentes** :
-  `charge_full = 1000`, `charge_full_design = 1000`, mais `charge_now = 467000`
-  et `capacity = 46700` (là où `capacity` est un pourcentage 0-100). Un calcul
-  naïf annoncerait « 0 % d'usure, chargée à 46 700 % » — un mensonge affirmé avec
-  aplomb. → **Contrôle de plausibilité obligatoire, voir §7.7.**
-- **Snaps** — ~39 montages `loop*`, `/var/lib/snapd` à 4,7 Go, 13 révisions
-  désactivées. → **`df` brut est illisible pour un humain : les squashfs sont
-  filtrés**, et le ménage des snaps est un gain réel.
-- **`unattended-upgrades` est activé.** → La sonde « mises à jour » doit distinguer
-  ce qui sera installé automatiquement de ce qui exige une intervention, sinon elle
-  réclame une action déjà prise en charge.
-- **`Linger=no`** — un service utilisateur s'arrête à la déconnexion. → L'installation
-  propose `loginctl enable-linger` pour un historique continu.
-- **sudo demande un mot de passe** — d'où la règle `sudoers.d` ciblée.
+- **PEP 668** — `/usr/lib/python3.14/EXTERNALLY-MANAGED` is present. `pip install`
+  into the system Python is refused. `psutil` 7.1.0 and `jinja2` are available as
+  apt packages; Flask, FastAPI and uvicorn are not. → **No dependency outside apt,
+  no virtualenv.**
+- **Resources** — 4 cores, 5.2 GB of RAM with ~1.5 GB actually available.
+  → **Budget: < 60 MB RSS for the service, < 2 % CPU on average, default database
+  ≈ 32 MB.** A health tool that degrades the health of the machine is a design
+  failure. This budget is what forces the display cadence (2 s, in memory) apart
+  from the write cadence (30 s, to disk) — see §6.1.
+- **Hardware** — Crucial MX300 489 GB SSD (`/dev/sda`), AMD Radeon HD 6730M GPU,
+  `BAT0` battery, Logitech mouse with its own battery (`hidpp_battery_0`).
+- **Sensors** — `lm-sensors` is absent, but `/sys/class/hwmon` exposes `coretemp`,
+  `acpitz`, `radeon`, `hp`, `BAT0`, `AC`. → **Read sysfs directly, no dependency on
+  `sensors`.**
+- **Battery** — `BAT0` does **not** expose `energy_full`; it uses the `charge_*`
+  family. → **Probes read both conventions**, otherwise the battery would show as
+  "unavailable" on this exact machine.
+- **This machine's battery driver reports incoherent values**: `charge_full = 1000`,
+  `charge_full_design = 1000`, yet `charge_now = 467000` and `capacity = 46700`
+  (where `capacity` is a 0-100 percentage). A naive computation would announce
+  "0 % wear, charged to 46,700 %" — a lie stated with confidence.
+  → **Plausibility checking is mandatory, see §7.6.**
+- **Snaps** — ~39 `loop*` mounts, `/var/lib/snapd` at 4.7 GB, 13 disabled revisions.
+  → **Raw `df` is unreadable for a human: squashfs mounts are filtered out**, and
+  snap cleanup is a real win.
+- **`unattended-upgrades` is enabled.** → The updates probe must separate what will
+  be installed automatically from what genuinely needs the user, otherwise it
+  demands an action that is already handled.
+- **`Linger=no`** — a user service stops at logout. → Installation offers
+  `loginctl enable-linger` for uninterrupted history.
+- **sudo requires a password** — hence the narrow `sudoers.d` rule.
 
-### État de référence au moment de la conception
+### Reference state at design time
 
-Disque `/` à 9 % (40 Go / 481 Go) · 0 service en échec · 17 mises à jour en attente ·
-59 erreurs au journal sur 24 h · ~5,3 Go récupérables (snaps 4,7 Go, cache APT
-475 Mo, `/var/log` 177 Mo) · CPU package 77 °C · charge 0,62.
+Root filesystem 9 % full (40 GB of 481 GB) · 0 failed services · 17 pending updates ·
+59 journal errors over 24 h · ~5.3 GB reclaimable (snaps 4.7 GB, APT cache 475 MB,
+`/var/log` 177 MB) · CPU package 77 °C · load 0.62.
 
 ## 4. Architecture
 
-### 4.1 Principe structurant : deux cadences
+### 4.1 The structuring principle: two cadences
 
-Lire `/proc` coûte des microsecondes ; lancer `apt list --upgradable` ou `smartctl`
-coûte des centaines de millisecondes et réveille le disque. Les confondre ruinerait
-le budget de ressources.
+Reading `/proc` costs microseconds; running `apt list --upgradable` or `smartctl`
+costs hundreds of milliseconds and wakes the disk. Conflating them would wreck the
+resource budget.
 
-- **Cadence rapide — 2 s** : CPU, mémoire, températures, débit réseau, charge,
-  batterie. Lecture pure de `/proc` et `/sys`.
-- **Cadence lente — 5 min** : SMART, mises à jour APT, services systemd, journal,
-  remplissage des partitions, processus, usure batterie, infos OS.
+- **Fast cadence — 2 s**: CPU, memory, temperatures, network throughput, load,
+  battery. Pure reads from `/proc` and `/sys`.
+- **Slow cadence — 5 min**: SMART, APT updates, systemd services, journal, partition
+  usage, processes, battery wear, OS information.
 
-### 4.2 Sondes indépendantes
+### 4.2 Independent probes
 
-Chaque domaine est un module exposant la même interface :
+Every domain is a module exposing the same interface:
 
 ```python
 NAME    = "thermal"
 CADENCE = FAST
-def collect() -> dict                    # mesure brute, aucune interprétation
-def evaluate(sample, history) -> list[Finding]   # fonction pure
+def collect() -> dict                            # raw measurement, no judgement
+def evaluate(sample, ctx) -> list[Finding]       # pure function
 ```
 
-**Séparation stricte mesure / jugement.** `collect()` ne produit que des chiffres ;
-`evaluate()` ne raisonne que sur des chiffres et ne touche ni au système ni à
-l'horloge. Toute la logique de verdict est donc testable sans matériel, avec des
-échantillons figés — c'est la propriété qui rend le mode Simple vérifiable.
+**Strict separation of measurement and judgement.** `collect()` produces only
+numbers; `evaluate()` reasons only about numbers and touches neither the system nor
+the clock. All verdict logic is therefore testable without hardware, from frozen
+samples — the property that makes Simple mode verifiable.
 
-**Isolation des pannes.** Une sonde qui échoue (SMART sans droits, pas de batterie,
-`apt` verrouillé) renvoie `{"status": "unavailable", "reason": ...}` et n'affecte
-aucune autre. Un outil de diagnostic qui plante quand quelque chose ne va pas est
-pire qu'inutile.
+**Fault isolation.** A probe that fails (SMART without privileges, no battery, `apt`
+locked) returns `{"status": "unavailable", "reason": ...}` and affects no other
+probe. A diagnostic tool that crashes when something is wrong is worse than useless.
 
-### 4.3 Flux
+### 4.3 Data flow
 
 ```
   /proc /sys      ┌──────────────┐        ┌──────────┐
-  smartctl   ───► │ ordonnanceur │ ─────► │  SQLite  │
+  smartctl   ───► │  scheduler   │ ─────► │  SQLite  │
   apt systemd     │  2 s / 5 min │        └────┬─────┘
                   └──────┬───────┘             │
-                         │ état courant        │ historique
+                         │ current state       │ history
                          ▼                     ▼
                   ┌───────────────────────────────┐
-                  │  serveur HTTP (ThreadingHTTP) │
+                  │  HTTP server (ThreadingHTTP)  │
                   │  /api/now /api/history        │
                   │  /api/stream (SSE) /api/actions│
                   └───────────────┬───────────────┘
                                   ▼
-                     navigateur — Simple / Expert
+                    browser — Simple / Expert, en / fr
 ```
 
-Le temps réel passe par **SSE** et non WebSocket : le flux est unidirectionnel,
-SSE tient en une trentaine de lignes sur `http.server` et se reconnecte tout seul.
-Plafond de 8 flux simultanés (un thread chacun), au-delà le client bascule en
-sondage à 5 s.
+Live updates use **SSE** rather than WebSocket: the stream is one-way, SSE fits in
+about thirty lines on `http.server`, and it reconnects on its own. Capped at 8
+concurrent streams (one thread each); beyond that the client falls back to polling
+every 5 s.
 
-## 5. Catalogue des sondes
+## 5. Probe catalogue
 
-| Sonde | Cadence | Source | Si indisponible |
+| Probe | Cadence | Source | When unavailable |
 |---|---|---|---|
-| `cpu` | rapide | `psutil`, `/proc/stat`, `/proc/cpuinfo` | — |
-| `memory` | rapide | `psutil`, `/proc/meminfo` | — |
-| `thermal` | rapide | `/sys/class/hwmon/*` (coretemp, acpitz, radeon, hp) | zone masquée |
-| `network` | rapide | `psutil.net_io_counters`, `ip -j addr` | — |
-| `battery` | rapide | `/sys/class/power_supply/*` — `energy_*` **et** `charge_*`, avec contrôle de plausibilité (§7.6) | carte masquée (poste fixe) ; valeurs aberrantes → « incohérent (pilote) » |
-| `storage` | lente | `psutil.disk_partitions` filtré (squashfs/tmpfs exclus), `du` ciblé | — |
-| `smart` | lente | `sudo smartctl -a /dev/sda` | « SMART verrouillé » + commande d'activation |
-| `updates` | lente | `apt-get -s dist-upgrade`, `/var/run/reboot-required`, état d'`unattended-upgrades` | « verrou apt occupé, nouvelle tentative » |
-| `services` | lente | `systemctl --failed --output=json` | — |
-| `journal` | lente | `journalctl -p err -S -24h -o json` groupé | — |
-| `processes` | lente | `psutil.process_iter` top 10 CPU / RSS | — |
-| `osinfo` | lente | `/etc/os-release`, `uname`, uptime, fin de support | — |
+| `cpu` | fast | `psutil`, `/proc/stat`, `/proc/cpuinfo` | — |
+| `memory` | fast | `psutil`, `/proc/meminfo` | — |
+| `thermal` | fast | `/sys/class/hwmon/*` (coretemp, acpitz, radeon, hp) | zone hidden |
+| `network` | fast | `psutil.net_io_counters`, `psutil.net_if_addrs` | — |
+| `battery` | fast | `/sys/class/power_supply/*` — `energy_*` **and** `charge_*`, plausibility-checked (§7.6) | card hidden (desktop); implausible values → "incoherent (driver)" |
+| `storage` | slow | `psutil.disk_partitions` filtered (squashfs/tmpfs excluded), targeted `du` | — |
+| `smart` | slow | `sudo smartctl --json -a /dev/sda` | "SMART locked" + the command to enable it |
+| `updates` | slow | `apt-get -s dist-upgrade`, `/var/run/reboot-required`, `unattended-upgrades` state | "apt lock busy, retrying" |
+| `services` | slow | `systemctl --failed --output=json` | — |
+| `journal` | slow | `journalctl -p err -S -24h -o json`, grouped | — |
+| `processes` | slow | `psutil.process_iter`, top 10 by CPU / RSS | — |
+| `osinfo` | slow | `/etc/os-release`, `uname`, uptime, support horizon | — |
 
-## 6. Stockage et rétention
+## 6. Storage and retention
 
-SQLite en mode WAL, `synchronous=NORMAL`, dans `~/.local/share/health-console/db.sqlite3`.
+SQLite in WAL mode, `synchronous=NORMAL`, at
+`~/.local/share/health-console/db.sqlite3`.
 
-### 6.1 Afficher finement n'est pas conserver longtemps
+### 6.1 Displaying finely is not the same as keeping long
 
-Ce sont deux besoins distincts, et les confondre fait exploser la base. Une
-sparkline des 60 dernières minutes a besoin d'un point toutes les 2 secondes ; une
-tendance sur 90 jours n'en a aucun besoin.
+These are two distinct needs, and conflating them makes the database explode. A
+sparkline over the last 60 minutes needs a point every 2 seconds; a 90-day trend
+needs nothing of the sort.
 
-- **Tampon circulaire en mémoire** — 2 s, sur 60 minutes glissantes. C'est lui qui
-  alimente le direct et les sparklines. 1 800 points × ~25 métriques × 8 octets
-  ≈ **360 Kio de RAM**. Rien n'est écrit sur disque à cette cadence.
-- **Base** — écriture toutes les 30 s (`store_seconds`), valeur agrégée depuis le
-  tampon (moyenne, min, max). C'est amplement suffisant pour l'historique et
-  **divise le volume par 15**.
+- **In-memory ring buffer** — 2 s resolution over a rolling 60 minutes. It feeds the
+  live view and the sparklines. 1,800 points × ~25 metrics × 8 bytes
+  ≈ **360 KiB of RAM**. Nothing is written to disk at that cadence.
+- **Database** — one write every 30 s (`store_seconds`), aggregated from the ring
+  (average, min, max). More than enough for history, and it **divides the volume by
+  15**.
 
-### 6.2 Schéma
+### 6.2 Schema
 
-Les clés de métriques sont **normalisées en entiers** : stocker la chaîne
-`"net.enp0s25.rx_bps"` sur chaque ligne coûterait plus cher que la mesure elle-même.
+Metric keys are **normalised to integers**: storing the string
+`"net.enp0s25.rx_bps"` on every row would cost more than the measurement itself.
 
 ```sql
 CREATE TABLE metric_key (id INTEGER PRIMARY KEY, key TEXT UNIQUE);
@@ -181,440 +185,517 @@ CREATE INDEX metric_key_ts ON metric(key_id, ts);
 CREATE INDEX metric_5m_key_ts ON metric_5m(key_id, ts);
 ```
 
-### 6.3 Rétention configurable
+### 6.3 Configurable retention
 
-Toutes les durées de conservation sont **exprimées en nombre de jours** et réglables
-dans `~/.config/health-console/config.toml` :
+Every retention period is **expressed in days** and set in
+`~/.config/health-console/config.toml`:
 
 ```toml
 [retention]
-raw_days       = 2      # mesures fines (pas de 30 s)
-aggregate_days = 90     # moyennes 5 minutes — c'est ce qui porte les tendances
-snapshot_days  = 7      # états structurés horaires
-event_days     = 365    # incidents ouverts/fermés — la mémoire des pannes
-audit_days     = 365    # journal des actions exécutées
+raw_days       = 2      # fine-grained samples (30 s step)
+aggregate_days = 90     # 5-minute averages — this is what carries the trends
+snapshot_days  = 7      # hourly structured states
+event_days     = 365    # opened/closed incidents — the memory of past failures
+audit_days     = 365    # log of executed actions
 
 [sampling]
-live_seconds   = 2      # rafraîchissement écran, mémoire uniquement
-store_seconds  = 30     # écriture en base
+live_seconds   = 2      # screen refresh, memory only
+store_seconds  = 30     # database write
 ```
 
-**Validation au démarrage**, avec refus explicite plutôt que comportement surprenant :
+**Validated at startup**, with an explicit refusal rather than surprising behaviour:
 
-- chaque durée est un entier ≥ 1 jour ;
-- `raw_days <= aggregate_days` — conserver le fin plus longtemps que l'agrégé n'a
-  pas de sens, et trahirait une faute de frappe ;
-- `store_seconds` doit être un multiple de `live_seconds` et ≤ 300 ;
-- une valeur invalide arrête le service avec un message nommant le champ fautif et
-  la valeur attendue. Un service qui démarre en ignorant silencieusement une
-  configuration erronée est un piège.
+- every period is an integer ≥ 1 day;
+- `raw_days <= aggregate_days` — keeping fine-grained data longer than the averages
+  makes no sense and would betray a typo;
+- `store_seconds` must be a multiple of `live_seconds` and ≤ 300;
+- an invalid value stops the service with a message naming the offending field and
+  the expected value. A service that starts while silently ignoring a broken
+  configuration is a trap.
 
-### 6.4 Coût annoncé, pas subi
+### 6.4 Cost announced, not suffered
 
-Le service **calcule et affiche la taille prévue** au démarrage et dans
-`health-console status`, à partir du nombre de métriques réellement collectées sur
-cette machine :
+The service **computes and displays the projected size** at startup and in
+`health-console status`, based on the number of metrics actually collected on this
+machine:
 
 ```
-lignes/jour  = 86400 / store_seconds × nb_métriques
-taille       ≈ raw_days × 2,9 Mo  +  aggregate_days × 0,29 Mo  +  ~3 Mo (reste)
+rows/day  = 86400 / store_seconds × metric_count
+size      ≈ raw_days × 2.9 MB  +  aggregate_days × 0.29 MB  +  ~3 MB (rest)
 ```
 
-Avec les valeurs par défaut sur cette machine (~25 métriques) : **≈ 32 Mo**.
+With the defaults on this machine (~25 metrics): **≈ 32 MB**.
 
-Au-delà de 500 Mo projetés, le démarrage affiche un avertissement explicite avec la
-taille estimée et le réglage en cause — **mais ne bloque pas** : c'est ta machine et
-ton disque, tu dois être prévenu, pas empêché.
+Beyond 500 MB projected, startup prints an explicit warning naming the estimate and
+the setting responsible — **but does not block**: it is the user's machine and the
+user's disk; they should be informed, not prevented.
 
-### 6.5 Effet d'un changement de rétention
+### 6.5 What changing retention does
 
-Il faut le dire franchement, parce que l'intuition trompe :
+This must be stated plainly, because intuition misleads:
 
-- **Réduire** une durée purge les données excédentaires au prochain cycle quotidien,
-  ou immédiatement avec `health-console prune`.
-- **Augmenter** une durée **ne ressuscite rien**. L'historique repart de la date du
-  changement. La console affiche donc toujours la profondeur d'historique
-  *réellement disponible*, jamais celle demandée en configuration — sinon un
-  graphique « 90 jours » à moitié vide laisserait croire à une panne de collecte.
+- **Lowering** a period purges the excess at the next daily cycle, or immediately
+  via `health-console prune`.
+- **Raising** a period **resurrects nothing**. History restarts from the date of the
+  change. The console therefore always displays the depth *actually available*,
+  never the one requested in configuration — otherwise a half-empty "90 days" chart
+  would suggest a collection failure.
 
-Purge et agrégation quotidiennes, `VACUUM` hebdomadaire. Si le disque passe sous
-1 Go libre, l'écriture s'interrompt proprement et un constat le signale : la console
-ne doit jamais être la cause du remplissage qu'elle dénonce.
+Pruning and aggregation run daily, `VACUUM` weekly. If free disk space drops below
+1 GB, writes stop cleanly and a finding says so: the console must never be the cause
+of the filling it reports.
 
-### 6.6 Nommage des métriques
+### 6.6 Metric naming
 
 `cpu.usage`, `cpu.freq`, `cpu.temp.pkg`, `mem.available`, `mem.swap.used`, `load.1`,
 `disk.sda2.used_pct`, `net.enp0s25.rx_bps`, `thermal.<zone>`, `battery.charge_pct`,
 `battery.wear_pct`.
 
-## 7. Moteur de verdicts
+## 7. Verdict engine
 
-### 7.1 Le constat, unité de base
+### 7.1 The finding: unit of interpretation
+
+A finding carries **an identifier and parameters, never a sentence**. Baking English
+prose into a probe would make the console untranslatable without duplicating every
+probe; the wording lives in the message catalogues (§11).
 
 ```python
 Finding(
-  id="storage.reclaimable", severity=INFO,
-  titre    = "5,3 Go peuvent être récupérés",
-  pourquoi = "Ce sont d'anciennes versions de logiciels et des fichiers "
-             "d'installation déjà utilisés. Les supprimer ne fait rien perdre.",
-  action   = ActionRef("clean.all"),
-  technique= "snapd 4,7 Go (13 rév. désactivées) · apt archives 475 Mo · "
-             "/var/log 177 Mo",
+    id="storage.reclaimable",
+    severity=Severity.INFO,
+    params={"reclaimable_bytes": 5_690_000_000, "snap_revisions": 13},
+    detail="snapd 4.7G (13 disabled rev.) · apt archives 475M · /var/log 177M",
+    action="clean.all",
 )
 ```
 
-`titre` et `pourquoi` alimentent le mode Simple ; `technique` alimente le mode
-Expert. Aucune traduction à la volée, aucun jargon qui fuit vers le grand public.
+- `id` selects the message in the active catalogue and is stable forever — it is a
+  contract, not a label.
+- `params` are numbers and identifiers the catalogue interpolates, formatted by
+  `Intl` in the active locale.
+- `detail` is the raw technical string for Expert mode. It carries measured values
+  and unit symbols, is deliberately **not translated**, and is never shown in Simple
+  mode.
+- `action` references an entry in the action catalogue (§8), or is `None`.
 
-Gravités : `OK`, `INFO`, `ATTENTION`, `URGENT`.
+Severities: `OK`, `INFO`, `ATTENTION`, `URGENT`.
 
-### 7.2 Score explicable
+**Every emittable finding id is declared in a single registry** (`FINDING_IDS`).
+Constructing a `Finding` with an unregistered id raises. This is what makes
+catalogue completeness testable (§11.4).
 
-Départ à 100, chaque constat retire des points selon sa gravité
-(`INFO` −2, `ATTENTION` −8, `URGENT` −25, plancher à 0). **Chaque point perdu est
-traçable** : cliquer sur le score déplie la liste des constats qui l'ont fait
-baisser. Aucun constat ⇒ 100, pas 94 « pour faire sérieux ». Le score d'antivirus,
-chiffre magique inexplicable, est explicitement rejeté.
+### 7.2 Explainable score
 
-### 7.3 Anti-clignotement
+Starts at 100; each finding subtracts points according to its severity
+(`INFO` −2, `ATTENTION` −8, `URGENT` −25, floored at 0). **Every lost point is
+traceable**: clicking the score expands the list of findings that lowered it. No
+findings means exactly 100 — not 94 "to look serious". The antivirus-style score,
+that magic number nobody can explain, is explicitly rejected.
 
-Une console qui vire au rouge parce qu'une compilation a chargé le CPU 3 secondes
-ne sera plus jamais crue. Donc :
+### 7.3 Anti-flapping
 
-- un seuil doit tenir sur une **fenêtre** avant d'ouvrir un constat (ex. CPU > 90 %
-  pendant 5 min) ;
-- il doit repasser sous un **seuil bas distinct** pour le refermer (hystérésis) ;
-- l'ouverture et la fermeture sont écrites dans `event`, ce qui donne un historique
-  des incidents et non seulement des courbes.
+A console that turns red because a compile loaded the CPU for three seconds will
+never be trusted again. Therefore:
 
-### 7.4 Tendances
+- a threshold must hold over a **window** before opening a finding (e.g. CPU > 90 %
+  for 5 minutes);
+- it must fall below a **distinct lower threshold** to close it (hysteresis);
+- opening and closing are written to `event`, which yields a history of incidents
+  rather than merely a history of curves.
 
-Avec 90 jours en base, l'outil dit ce qu'un tableau de bord instantané ne peut pas
-dire. Régression linéaire sur la fenêtre disponible, affichée seulement si la
-corrélation est significative (r² > 0,7) et l'échéance sous 24 mois :
+### 7.4 Trends
 
-- « le disque gagne 1,8 Go par semaine, saturation estimée en mars 2027 » ;
-- usure batterie extrapolée ;
-- température CPU moyenne en hausse — signe habituel d'un ventilateur encrassé.
+With 90 days on record, the tool can say what an instantaneous dashboard cannot.
+Linear regression over the available window, shown only when the correlation is
+meaningful (r² > 0.7) and the horizon is under 24 months:
 
-C'est le bénéfice concret du choix « live + historique ».
+- "the disk grows by 1.8 GB per week, projected full in March 2027";
+- extrapolated battery wear;
+- rising average CPU temperature — the usual sign of a clogged fan.
 
-### 7.5 Seuils
+This is the concrete payoff of choosing "live + history".
 
-Tous les seuils vivent dans **`rules.py`, un seul fichier**, pour qu'un ajustement
-n'impose pas de relire le projet.
+### 7.5 Thresholds
 
-| Domaine | Attention | Urgent | Note |
+Every threshold lives in **`rules.py`, a single file**, so that adjusting one does
+not require reading the whole project.
+
+| Domain | Attention | Urgent | Note |
 |---|---|---|---|
-| Disque `/` | > 80 % | > 92 % ou < 3 Go libres | + projection de saturation |
-| Temp CPU | > 85 °C soutenu 5 min | > 95 °C ou throttling | 77 °C actuel = normal |
-| Mémoire | dispo < 15 % et swap actif | OOM killer au journal | marge déjà mince |
-| SMART | réallocations > 0, usure > 80 % | `FAILING_NOW` | usure = vrai indicateur SSD |
-| Batterie | usure > 30 % | usure > 50 % | `charge_full / charge_full_design`, **si plausible** — sinon aucun constat |
-| Mises à jour | correctif sécurité en attente | sécurité > 14 j en attente | pondéré par `unattended-upgrades` |
-| Services | 1 en échec | échec + redémarrages en boucle | 0 chez toi |
-| Journal | motif nouveau ou en accélération | panique noyau, erreurs I/O | 59/24 h = bruit normal |
-| Réseau | perte DNS | pas de route par défaut | — |
+| Root filesystem | > 80 % | > 92 % or < 3 GB free | plus a full-by projection |
+| CPU temperature | > 85 °C sustained 5 min | > 95 °C or throttling | 77 °C today is normal |
+| Memory | available < 15 % and swap active | OOM killer in journal | margin is already thin |
+| SMART | reallocations > 0, wear > 80 % | `FAILING_NOW` | wear is the real SSD indicator |
+| Battery | wear > 30 % | wear > 50 % | `charge_full / charge_full_design`, **only if plausible** — otherwise no finding |
+| Updates | any pending security fix | security pending > 14 days | weighted by `unattended-upgrades` |
+| Services | 1 failed | failed and restart-looping | 0 on this machine |
+| Journal | new or accelerating pattern | kernel panic, I/O errors | 59/24 h is normal noise |
+| Network | DNS lost | no default route | — |
 
-### 7.6 Contrôle de plausibilité des capteurs
+### 7.6 Sensor plausibility checking
 
-Le matériel ment. Pas par malveillance : pilotes approximatifs, firmwares ACPI
-bâclés, unités incohérentes selon le constructeur. La batterie de cette machine en
-est la démonstration (§3). Afficher un chiffre faux avec assurance est pire que
-d'admettre qu'on ne sait pas — c'est précisément ce qui détruit la confiance dans
-un outil de diagnostic.
+Hardware lies. Not maliciously: sloppy drivers, careless ACPI firmware, units that
+differ by vendor. This machine's battery is the proof (§3). Displaying a wrong
+number with confidence is worse than admitting ignorance — it is exactly what
+destroys trust in a diagnostic tool.
 
-Chaque grandeur déclare donc son **domaine de validité**, appliqué dans `collect()`
-avant toute écriture en base :
+Every quantity therefore declares a **validity domain**, enforced inside `collect()`
+before anything is stored:
 
-| Grandeur | Domaine admis | Cohérence croisée |
+| Quantity | Accepted domain | Cross-check |
 |---|---|---|
-| Pourcentages | 0 – 100 | — |
-| Températures | −20 – 125 °C | zone ignorée si hors bornes |
-| Charge batterie | > 0 | `charge_now <= charge_full * 1,05` |
-| Capacité batterie | > 0 | `charge_full <= charge_full_design * 1,05` |
-| Fréquence CPU | 100 MHz – 10 GHz | — |
-| Compteurs réseau | monotones | remise à zéro = redémarrage d'interface, pas un débit négatif |
+| Percentages | 0 – 100 | — |
+| Temperatures | −20 – 125 °C | zone ignored when out of range |
+| Battery charge | > 0 | `charge_now <= charge_full × 1.05` |
+| Battery capacity | > 0 | `charge_full <= charge_full_design × 1.05` |
+| CPU frequency | 100 MHz – 10 GHz | — |
+| Network counters | monotonic | a reset means an interface restart, not a negative rate |
 
-Une valeur hors domaine n'est **ni affichée ni stockée**. La carte concernée
-indique « valeur incohérente rapportée par le pilote » avec la valeur brute en mode
-Expert, pour que le problème reste diagnosticable. Sur cette machine, l'usure
-batterie sera donc marquée indisponible plutôt que faussement rassurante à 0 %.
+An out-of-domain value is **neither displayed nor stored**. The affected card reads
+"incoherent value reported by the driver", with the raw value visible in Expert mode
+so the problem stays diagnosable. On this machine, battery wear will therefore be
+reported as unavailable rather than falsely reassuring at 0 %.
 
-### 7.7 Le piège du bruit
+### 7.7 The noise trap
 
-59 erreurs au journal en 24 h, c'est le bruit normal d'un Linux de bureau
-(Bluetooth, ACPI, pilotes). Les remonter brutes en « 59 erreurs ! » ferait paniquer
-pour rien et détruirait la confiance dans l'outil — après quoi plus personne ne lit
-les vraies alertes. La sonde `journal` **regroupe par message récurrent**, applique
-une liste de motifs de bruit connus, et ne signale qu'un motif **nouveau** ou dont
-la fréquence **accélère**.
+59 journal errors in 24 hours is the normal background of a Linux desktop
+(Bluetooth, ACPI, drivers). Reporting them raw as "59 errors!" would cause panic
+over nothing and destroy trust in the tool — after which nobody reads the real
+alerts. The `journal` probe **groups by recurring message**, applies a list of known
+noise patterns, and reports only a pattern that is **new** or whose frequency is
+**accelerating**.
 
-## 8. Catalogue d'actions
+## 8. Action catalogue
 
-### 8.1 Principe
+### 8.1 Principle
 
-Il n'existe **aucune route « exécute cette commande »**. Chaque action est déclarée
-en dur :
+There is **no "run this command" route**. Every action is declared in code:
 
 ```python
 Action(
-  id="apt.upgrade",
-  label="Installer les mises à jour",
-  argv=["/usr/bin/apt-get", "-y", "-o", "Dpkg::Options::=--force-confold",
-        "dist-upgrade"],
-  root=True, risk=MEDIUM, duree="quelques minutes",
-  confirm="Cette opération va installer 17 paquets. Ne coupez pas l'alimentation.",
+    id="apt.upgrade",
+    argv=["/usr/bin/apt-get", "-y", "-o", "Dpkg::Options::=--force-confold",
+          "dist-upgrade"],
+    root=True, risk=Risk.MEDIUM,
+    params={"package_count": 17},     # interpolated into the localized confirmation
 )
 ```
 
-Le navigateur envoie **un identifiant**, jamais un fragment de commande. `argv` est
-figé, `shell=False`, aucune interpolation de texte venu du réseau. C'est ce qui
-sépare un catalogue d'actions d'un shell à distance.
+The browser sends **an identifier**, never a command fragment. `argv` is fixed,
+`shell=False`, and no text from the network is interpolated into it. That is what
+separates an action catalogue from a remote shell.
 
-### 8.2 Le catalogue
+Labels, durations and confirmation prompts are catalogue messages (§11), keyed by
+action id — the same mechanism as findings.
 
-| id | Libellé | Risque | Commande |
-|---|---|---|---|
-| `apt.refresh` | Rafraîchir la liste des paquets | sûr | `apt-get update` |
-| `apt.upgrade` | Installer toutes les mises à jour | moyen | `apt-get -y -o Dpkg::Options::=--force-confold dist-upgrade` |
-| `apt.security` | Installer les correctifs de sécurité seulement | moyen | `unattended-upgrade` |
-| `clean.autoremove` | Supprimer les paquets orphelins | moyen | `apt-get -y autoremove --purge` |
-| `clean.aptcache` | Vider le cache des paquets | sûr | `apt-get clean` |
-| `clean.snaps` | Supprimer les anciennes versions de snaps | moyen | `snap remove --revision=<r> <nom>` par révision désactivée |
-| `clean.journal` | Tronquer les journaux à 15 jours | moyen | `journalctl --vacuum-time=15d` |
-| `svc.restart` | Redémarrer un service en échec | moyen | `systemctl restart <unité>` — unité **issue de la liste des services en échec**, jamais du client |
-| `sys.reboot` | Redémarrer la machine | sensible | `shutdown -r +1` |
-| `sys.poweroff` | Éteindre la machine | sensible | `shutdown -h +1` |
-| `disk.selftest` | Autotest court du SSD | sûr | `smartctl -t short /dev/sda` |
-| `disk.trim` | Entretien du SSD (TRIM) | sûr | `fstrim -av` |
-| `report.export` | Exporter un rapport de diagnostic | sûr | interne, sans privilège |
+### 8.2 The catalogue
 
-Les actions de nettoyage **annoncent d'abord l'espace récupérable** (simulation
-`apt-get -s`, `du`, `snap list --all`) avant de proposer le bouton.
-
-`sys.reboot` et `sys.poweroff` ne sont **affichés que lorsqu'un redémarrage est
-requis** : un bouton dangereux affiché en permanence finit par être cliqué par
-accident. Délai d'une minute, annulable.
-
-**Les deux seules actions paramétrées sont `svc.restart` et `clean.snaps`.** Dans
-les deux cas, le paramètre n'est jamais accepté sur parole : il doit appartenir à
-une liste que le serveur reconstruit lui-même au moment de l'exécution — les unités
-actuellement en échec pour `svc.restart`, les révisions de snaps actuellement
-désactivées pour `clean.snaps`. Une valeur absente de cette liste est rejetée en
-`400`. Le client peut donc choisir parmi des possibilités, jamais en inventer.
-
-### 8.3 Garde-fous
-
-- **Verrou unique** : une seule action à la fois, jamais deux `apt` concurrents.
-- **Sortie en direct** : la sortie défile en temps réel dans la page via SSE
-  (`apt upgrade` prend des minutes ; un spinner aveugle est inacceptable).
-- **Audit** : heure, action, source, code de retour, durée, sortie complète, écrits
-  en base et consultables dans l'interface.
-- **Confirmation** explicite côté navigateur, avec le texte de conséquence.
-- **Refus hors loopback par défaut** : consulter et agir n'ont pas le même coût
-  quand on se trompe. Déblocable par `allow_remote_actions = true`.
-- **Délai maximal** : 30 min, au-delà le processus est terminé et l'échec journalisé.
-
-### 8.4 Règle sudoers
-
-`/etc/sudoers.d/health-console`, mode 0440, validée par `visudo -c` à l'installation.
-Chemins absolus résolus et vérifiés sur cette machine :
-`/usr/sbin/smartctl`, `/usr/bin/apt-get`, `/usr/bin/systemctl`, `/usr/bin/journalctl`,
-`/usr/sbin/fstrim`, `/usr/bin/snap`, `/usr/sbin/shutdown`,
-`/usr/bin/unattended-upgrade`.
-
-Chaque entrée est nommée avec ses arguments figés. **Aucun joker, jamais `ALL`.**
-Le fichier est fourni prêt à installer ; l'installateur affiche son contenu et
-demande confirmation avant de l'écrire.
-
-## 9. API HTTP
-
-| Route | Méthode | Rôle |
+| id | Risk | Command |
 |---|---|---|
-| `/` | GET | la page (mode selon `localStorage`) |
-| `/static/*` | GET | HTML, CSS, JS, icônes — servis depuis le disque |
-| `/api/now` | GET | état complet : sondes, constats, score |
-| `/api/history` | GET | `?metric=<clé>&range=1h\|24h\|7d\|90d` |
-| `/api/stream` | GET | SSE : `tick` (rapide), `state` (lent), `action` (sortie) |
-| `/api/actions` | GET | catalogue disponible dans l'état courant |
-| `/api/actions/<id>` | POST | lance l'action, retourne `run_id` |
-| `/api/actions/runs` | GET | journal d'audit |
-| `/api/export` | GET | rapport HTML autonome, un seul fichier |
+| `apt.refresh` | safe | `apt-get update` |
+| `apt.upgrade` | medium | `apt-get -y -o Dpkg::Options::=--force-confold dist-upgrade` |
+| `apt.security` | medium | `unattended-upgrade` |
+| `clean.autoremove` | medium | `apt-get -y autoremove --purge` |
+| `clean.aptcache` | safe | `apt-get clean` |
+| `clean.snaps` | medium | `snap remove --revision=<r> <name>` per disabled revision |
+| `clean.journal` | medium | `journalctl --vacuum-time=15d` |
+| `svc.restart` | medium | `systemctl restart <unit>` — unit taken **from the failed-services list**, never from the client |
+| `sys.reboot` | sensitive | `shutdown -r +1` |
+| `sys.poweroff` | sensitive | `shutdown -h +1` |
+| `disk.selftest` | safe | `smartctl -t short /dev/sda` |
+| `disk.trim` | safe | `fstrim -av` |
+| `report.export` | safe | internal, unprivileged |
 
-Toutes les réponses sont en JSON hors `/` et `/static/*`. Les erreurs portent un
-code HTTP juste et un corps `{"error": "...", "detail": "..."}`.
+Cleanup actions **first announce how much space they will reclaim** (`apt-get -s`,
+`du`, `snap list --all`) before offering the button.
+
+`sys.reboot` and `sys.poweroff` are **shown only when a reboot is required**: a
+dangerous button on permanent display eventually gets clicked by accident. One
+minute delay, cancellable.
+
+### 8.3 Parameterised actions
+
+**Only `svc.restart` and `clean.snaps` take a parameter.** In both cases the
+parameter is never taken on trust: it must belong to a list the server rebuilds
+itself at execution time — currently failed units for `svc.restart`, currently
+disabled snap revisions for `clean.snaps`. A value absent from that list is rejected
+with `400`. The client may choose among possibilities; it may never invent one.
+
+### 8.4 Guard rails
+
+- **Single lock**: one action at a time, never two concurrent `apt` runs.
+- **Live output**: output streams into the page over the same SSE channel
+  (`apt upgrade` takes minutes; a blind spinner is unacceptable).
+- **Audit**: timestamp, action, source, exit code, duration and full output written
+  to the database and visible in the interface.
+- **Explicit confirmation** in the browser, carrying the consequence text.
+- **Refused off-loopback by default**: reading and acting do not carry the same cost
+  when you get it wrong. Unlocked by `allow_remote_actions = true`.
+- **Hard timeout**: 30 minutes, after which the process is terminated and the
+  failure recorded.
+
+### 8.5 Sudoers rule
+
+`/etc/sudoers.d/health-console`, mode 0440, checked with `visudo -c` at install.
+Absolute paths resolved and verified on this machine: `/usr/sbin/smartctl`,
+`/usr/bin/apt-get`, `/usr/bin/systemctl`, `/usr/bin/journalctl`, `/usr/sbin/fstrim`,
+`/usr/bin/snap`, `/usr/sbin/shutdown`, `/usr/bin/unattended-upgrade`.
+
+Each entry is named with its fixed arguments. **No wildcards, never `ALL`.** The
+file ships ready to install; the installer prints its content and asks for
+confirmation before writing it.
+
+## 9. HTTP API
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/` | GET | the page |
+| `/static/*` | GET | HTML, CSS, JS, icons, message catalogues — served from disk |
+| `/api/now` | GET | full state: probes, findings, score |
+| `/api/history` | GET | `?metric=<key>&range=1h\|24h\|7d\|90d` |
+| `/api/stream` | GET | SSE: `state` (state), `action` (action output) |
+| `/api/actions` | GET | catalogue available in the current state |
+| `/api/actions/<id>` | POST | run the action, returns `run_id` |
+| `/api/actions/runs` | GET | audit log |
+| `/api/export` | GET | standalone HTML report, single file |
+
+**The API is locale-neutral.** It returns finding ids, action ids, parameters and
+raw values. It never returns a translated sentence, so one response serves every
+language and switching locale needs no round trip.
+
+Responses are JSON outside `/` and `/static/*`. Errors carry an accurate HTTP status
+and a body of `{"error": "...", "detail": "..."}` — both machine-readable strings,
+not user-facing prose.
 
 ## 10. Interface
 
-### 10.1 Deux modes
+### 10.1 Two modes
 
-Un seul document, deux compositions. Le commutateur mémorise le choix en
-`localStorage` ; **Simple est le mode par défaut**, l'inverse trahirait la commande.
+One document, two compositions. The switch remembers the choice in `localStorage`;
+**Simple is the default**, since the opposite would betray the brief.
 
-**Simple** — une colonne large et aérée. Verdict en haut, puis une carte par
-constat, chacune avec son bouton d'action quand il y en a une. Ni graphique ni
-unité exotique : « il reste 441 Go », pas « 9 % de 481 Go ».
+**Simple** — a single wide, airy column. Verdict at the top, then one card per
+finding, each with its action button where one exists. Nothing else. No charts, no
+exotic units: "441 GB left", not "9 % of 481 GB".
 
-**Expert** — grille dense : jauges, sparklines des 60 dernières minutes, tables des
-processus et partitions, courbes 24 h / 7 j / 90 j, journal d'audit, et le JSON brut
-de chaque sonde en dernier recours.
+**Expert** — the dense grid: gauges, sparklines over the last 60 minutes, process
+and partition tables, 24 h / 7 d / 90 d history charts, action audit log, and each
+probe's raw JSON as a last resort.
 
-### 10.2 Accessibilité
+### 10.2 Accessibility
 
-Ce n'est pas un supplément d'âme quand on vise le grand public.
+Not a nicety when the audience is the general public.
 
-- La couleur ne porte **jamais** seule l'information : chaque état a une icône et un
-  mot (« Attention », pas seulement de l'orange) — sinon 8 % des hommes ne lisent
-  pas le tableau de bord.
-- Contrastes AA, navigation clavier complète, cibles tactiles ≥ 44 px.
-- `prefers-reduced-motion` et `prefers-color-scheme` respectés.
-- Régions live ARIA pour les valeurs qui changent, sans bavardage du lecteur d'écran.
-- Formats français via `Intl` : « 4,7 Go », « 21:11 ».
+- Colour **never** carries information alone: every state has an icon and a word
+  ("Attention", not merely orange) — otherwise 8 % of men cannot read the dashboard.
+- AA contrast, full keyboard navigation, touch targets ≥ 44 px.
+- `prefers-reduced-motion` and `prefers-color-scheme` respected.
+- ARIA live regions for changing values, without screen-reader chatter.
+- Numbers and times formatted through `Intl` in the active locale.
 
 ### 10.3 Responsive
 
-L'accès LAN ayant été retenu, consulter depuis un téléphone est un usage réel : la
-grille Expert se replie en une colonne, le mode Simple est pensé mobile d'abord.
+Since LAN access was chosen, reading the console from a phone is a real use case:
+the Expert grid collapses to one column, and Simple mode is designed mobile-first.
 
-### 10.4 Honnêteté de l'affichage
+### 10.4 Honest display
 
-Si le flux SSE tombe, la page ne fige pas des valeurs périmées en faisant semblant :
-elle grise les chiffres et affiche « données figées depuis 14:32 · reconnexion… »,
-avec retente à délai croissant. **Une console de santé qui ment sur sa propre
-fraîcheur est un piège.** Même règle pour une sonde indisponible : « SMART
-indisponible » et la commande pour l'activer, jamais un zéro rassurant.
+If the SSE stream drops, the page does not freeze stale values while pretending
+otherwise: it dims the numbers and shows "data frozen since 14:32 · reconnecting…",
+retrying with a growing delay. **A health console that lies about its own freshness
+is a trap.** Same rule for an unavailable probe: "SMART unavailable" plus the command
+to enable it, never a reassuring zero.
 
-### 10.5 Technique front
+### 10.5 Front-end technique
 
-Aucun build, aucun CDN — la console doit fonctionner sans Internet, ce qui est la
-moindre des choses pour un outil de diagnostic. Modules ES natifs, CSS moderne
-(grid, container queries, `oklch`), graphiques en SVG dessinés à la main
-(sparklines et courbes d'historique). Budget : < 60 Kio de JS non compressé.
+No build step, no CDN — the console must work without Internet access, which is the
+least one can ask of a diagnostic tool. Native ES modules, modern CSS (grid,
+container queries, `oklch`), hand-drawn SVG charts. Budget: < 60 KiB of uncompressed
+JS, plus the message catalogues.
 
-## 11. Sécurité
+## 11. Internationalisation
 
-- Écoute sur `0.0.0.0:8787`, port configurable.
-- **Jeton** aléatoire de 32 octets généré à l'installation, stocké dans
-  `~/.config/health-console/config.toml` en mode 0600, exigé pour tout accès non
-  loopback, comparé en **temps constant** (`hmac.compare_digest`).
-- Le jeton vit dans le `localStorage` du navigateur, **jamais dans une URL** qu'on
-  colle par mégarde dans un chat ou qui atterrit dans un historique.
-- Actions refusées hors loopback sauf `allow_remote_actions = true`.
-- Catalogue fermé, `argv` figés, `shell=False`, aucune interpolation.
-- `sudoers.d` limité aux binaires nommés avec leurs arguments.
-- En-têtes : `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options:
-  nosniff`, `Referrer-Policy: no-referrer`.
-- Durcissement systemd : `NoNewPrivileges=no` (obligatoire, `sudo` en dépend),
-  `ProtectSystem=strict` avec `ReadWritePaths=` limité à
-  `~/.local/share/health-console` et `~/.config/health-console`, plus `PrivateTmp`
-  et `RestrictNamespaces`. **`ProtectHome` n'est pas utilisé** : il empêcherait le
-  service d'écrire sa propre base.
-- Le rapport exporté indique en tête qu'il contient des informations système
-  (noms d'hôte, interfaces, IP locales) et **ne contient jamais le jeton**.
+### 11.1 Where the wording lives
 
-## 12. Robustesse et modes dégradés
+The API is locale-neutral (§9) and findings carry ids and parameters (§7.1). All
+user-facing wording lives in **JSON message catalogues served as static files**:
+`web/i18n/en.json` and `web/i18n/fr.json`.
 
-| Panne | Comportement |
+```json
+{
+  "finding.battery.wear.title": "The battery has lost {wear_pct} % of its original capacity",
+  "finding.battery.wear.why": "It therefore lasts less than when new. This is normal battery ageing, but past half its capacity, replacement becomes reasonable.",
+  "severity.ATTENTION": "Attention",
+  "ui.freshness.stale": "Data frozen since {time} · reconnecting…"
+}
+```
+
+Catalogues are fetched from the same origin, so `Content-Security-Policy:
+default-src 'self'` covers them without exception.
+
+### 11.2 Locale selection
+
+1. An explicit choice stored in `localStorage` wins.
+2. Otherwise the first `navigator.languages` entry with a catalogue is used.
+3. Otherwise **English**, which is also the fallback for any key missing from
+   another catalogue.
+
+A visible selector switches locale **without reloading**: the state is already in
+memory and only the rendering pass reruns. The choice is remembered.
+
+### 11.3 Formatting
+
+`Intl.NumberFormat` and `Intl.DateTimeFormat` are constructed with the active
+locale, so "4.7 GB" becomes "4,7 Go" in French without a second code path. Unit
+symbols are catalogue entries, not string literals in the rendering code.
+
+### 11.4 Completeness is enforced by tests
+
+A missing translation must be a test failure, not a hole the user discovers.
+
+- Every id in `FINDING_IDS` has `title` and `why` entries in **every** catalogue.
+- Every action id has `label` and `confirm` entries in every catalogue.
+- Corresponding entries across catalogues use **the same placeholders** — a French
+  string referring to `{wear_pct}` when the English one says `{wear}` is a defect.
+- Every catalogue has exactly the same key set; extra keys are as much of a failure
+  as missing ones.
+- No catalogue value is empty.
+
+### 11.5 What is not translated
+
+`detail` strings (§7.1), metric keys, action ids, log messages and API error codes
+stay in English. They are diagnostic material, addressed to whoever reads the raw
+data, and translating them would make problem reports harder to compare.
+
+## 12. Security
+
+- Listens on `0.0.0.0:8787`, port configurable.
+- **Token** of 32 random bytes generated at install, stored in
+  `~/.config/health-console/config.toml` with mode 0600, required for any non-loopback
+  access, compared in **constant time** (`hmac.compare_digest`).
+- The token lives in the browser's `localStorage`, **never in a URL** that could be
+  pasted into a chat or land in a history file.
+- Actions refused off-loopback unless `allow_remote_actions = true`.
+- Closed catalogue, fixed `argv`, `shell=False`, no interpolation.
+- `sudoers.d` limited to the named binaries with their arguments.
+- Headers: `Content-Security-Policy: default-src 'self'`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+- systemd hardening: `NoNewPrivileges=no` (mandatory, `sudo` depends on it),
+  `ProtectSystem=strict` with `ReadWritePaths=` limited to
+  `~/.local/share/health-console` and `~/.config/health-console`, plus `PrivateTmp`
+  and `RestrictNamespaces`. **`ProtectHome` is not used**: it would stop the service
+  writing its own database.
+- The exported report states up front that it contains system information (hostname,
+  interfaces, local IPs) and **never contains the token**.
+
+## 13. Robustness and degraded modes
+
+| Failure | Behaviour |
 |---|---|
-| Sonde en échec | `unavailable` + raison affichée + commande pour débloquer |
-| Verrou `apt` occupé | constat « mise à jour en cours ailleurs », nouvelle tentative au cycle suivant |
-| Collecteur tué | `Restart=on-failure`, `RestartSec=5` |
-| Base corrompue | recréée, incident journalisé — l'historique est précieux, pas vital |
-| SSE coupé | reconnexion à délai croissant, données visiblement marquées périmées |
-| Action en échec | code de retour et sortie complète affichés — jamais d'échec silencieux |
-| Disque plein | l'écriture en base s'arrête proprement, la console continue à afficher |
+| Probe fails | `unavailable` + displayed reason + the command to unlock it |
+| `apt` lock busy | finding "update running elsewhere", retried next cycle |
+| Collector killed | `Restart=on-failure`, `RestartSec=5` |
+| Database corrupt | recreated, incident logged — history is valuable, not vital |
+| SSE dropped | reconnect with growing delay, data visibly marked stale |
+| Action fails | exit code and full output displayed — never a silent failure |
+| Disk full | database writes stop cleanly, the console keeps displaying |
+| Catalogue missing a key | English fallback, and the missing key logged to the console |
 
-## 13. Tests
+## 14. Testing
 
-La séparation mesure / jugement paie ici : `evaluate()` étant pure, toute la logique
-se teste sans matériel et en millisecondes.
+The measurement/judgement split pays off here: `evaluate()` being pure, all the
+logic is testable without hardware, in milliseconds.
 
-- **Fixtures** — échantillons réels capturés sur cette machine, plus des cas
-  synthétiques impossibles à provoquer : disque à 99 %, SMART `FAILING_NOW`,
-  batterie à 60 % d'usure, panique noyau, service en boucle de redémarrage,
-  batterie absente (poste fixe), `charge_*` **et** `energy_*`, et **les valeurs
-  aberrantes réelles de cette machine** (`charge_now` = 467 × `charge_full`), qui
-  doivent produire « incohérent » et non un chiffre.
-- **Verdicts** — un test par règle de `rules.py`, aux deux bords du seuil, plus
-  l'hystérésis (une pointe brève n'ouvre pas de constat ; un dépassement soutenu
-  l'ouvre ; le retour sous le seuil bas le ferme).
-- **Score** — la somme est exacte et chaque point perdu remonte à un constat.
-- **Stockage** — rétention, agrégation 5 min et purge, avec **horloge injectée**
-  (pas de test qui attend 48 h). Chaque durée configurable est testée : une valeur
-  réduite purge, une valeur augmentée ne ressuscite rien, `raw_days > aggregate_days`
-  est refusé au démarrage, et l'estimation de taille est vérifiée contre le volume
-  réellement écrit après une simulation d'un mois d'échantillons.
-- **Serveur** — routage, jeton absent / faux / valide, refus d'action depuis une IP
-  non loopback, comportement au-delà de 8 flux SSE.
-- **Actions** — construction des `argv` et validation du paramètre de `svc.restart`,
-  **vérifiées sans jamais exécuter** les commandes.
-- **Textes** — tout constat possède `titre`, `pourquoi` et `technique` non vides ;
-  le mode Simple ne contient aucun terme d'une liste noire de jargon.
-- **Fumée** — un test à part lance les vraies sondes sur cette machine, marqué comme
-  dépendant du matériel.
+- **Fixtures** — real samples captured on this machine, plus synthetic cases that
+  cannot be provoked: disk at 99 %, SMART `FAILING_NOW`, battery at 60 % wear,
+  kernel panic, restart-looping service, absent battery (desktop), `charge_*` **and**
+  `energy_*`, and **this machine's real out-of-range values**
+  (`charge_now` = 467 × `charge_full`), which must yield "incoherent" and not a
+  number.
+- **Verdicts** — one test per rule in `rules.py`, at both sides of the threshold,
+  plus hysteresis (a brief spike opens nothing; a sustained breach opens; returning
+  under the low threshold closes).
+- **Score** — the sum is exact and every lost point maps back to a finding.
+- **Storage** — retention, 5-minute aggregation and pruning, with an **injected
+  clock** (no test waits 48 hours). Each configurable period is tested: lowering
+  purges, raising resurrects nothing, `raw_days > aggregate_days` is refused at
+  startup, and the size estimate is checked against the volume actually written
+  after simulating a month of samples.
+- **Server** — routing, token absent / wrong / valid, action refused from a
+  non-loopback address, behaviour past 8 SSE streams.
+- **Actions** — `argv` construction and parameter validation for `svc.restart` and
+  `clean.snaps`, **verified without ever executing** the commands.
+- **Internationalisation** — the completeness rules of §11.4, plus a check that no
+  user-facing string is hard-coded in the rendering code.
+- **Smoke** — a separate test runs the real probes on this machine, marked as
+  hardware-dependent.
 
-## 14. Installation et exploitation
+## 15. Installation and operation
 
-CLI `health-console` :
+`health-console` CLI:
 
-- `run` — lance en premier plan (développement)
-- `install` — écrit l'unité systemd utilisateur, génère le jeton, affiche la règle
-  sudoers **et demande confirmation** avant de l'installer, propose
-  `loginctl enable-linger`
-- `status` — état du service, du jeton, des privilèges, de la base
-- `export [fichier]` — rapport HTML autonome
-- `token [--rotate]` — affiche ou régénère le jeton
-- `prune` — applique immédiatement les durées de rétention configurées
-- `config` — affiche la configuration effective et la taille de base projetée
+- `run` — run in the foreground (development)
+- `install` — write the systemd user unit, generate the token, print the sudoers rule
+  **and ask for confirmation** before installing it, offer `loginctl enable-linger`
+- `status` — service, token, privileges and database state
+- `config` — effective configuration and projected database size
+- `prune` — apply the configured retention immediately
+- `export [file]` — standalone HTML report
+- `token [--rotate]` — show or regenerate the token
 
-Unité systemd utilisateur : `WantedBy=default.target`, `Restart=on-failure`,
-`MemoryMax=128M` (garde-fou dur contre une fuite sur une machine à 5 Go).
+systemd user unit: `WantedBy=default.target`, `Restart=on-failure`,
+`MemoryMax=128M` (a hard guard against a leak on a 5 GB machine).
 
-## 15. Arborescence
+## 16. Layout
 
 ```
 health-console/
 ├── bin/health-console
 ├── healthconsole/
 │   ├── config.py       server.py     scheduler.py   store.py
-│   ├── rules.py        verdict.py    actions.py     texts_fr.py
-│   └── probes/  cpu memory storage thermal battery smart
-│                network processes updates services journal osinfo
-├── web/  index.html  app.js  style.css  charts.js  icons.svg
+│   ├── rules.py        verdict.py    actions.py     findings.py
+│   ├── plausibility.py ring.py       cli.py
+│   └── probes/  cpu memory thermal network battery storage smart
+│                updates services journal processes osinfo
+├── web/  index.html  style.css  app.js  i18n/en.json  i18n/fr.json
 ├── systemd/health-console.service
 ├── packaging/sudoers.d/health-console
-├── tests/  fixtures/  test_verdict.py  test_store.py
-│           test_server.py  test_actions.py  test_texts.py  test_smoke.py
-└── docs/superpowers/specs/
+├── tests/  fixtures/  test_verdict.py  test_store.py  test_server.py
+│           test_actions.py  test_i18n.py  test_smoke.py
+└── docs/superpowers/
 ```
 
-## 16. Hors périmètre (YAGNI assumé)
+## 17. Out of scope (deliberate YAGNI)
 
-Écarté volontairement, à rouvrir seulement sur besoin réel :
+Excluded on purpose, to be reopened only on real need:
 
-- multi-machines, agrégation de flotte ;
-- alertes par courriel, Telegram ou notification de bureau ;
-- comptes utilisateurs, rôles, authentification multi-utilisateur ;
-- conteneurs, machines virtuelles (`docker` absent, `virbr0` inactif) ;
-- GPU NVIDIA (`nvidia-smi` absent, GPU AMD ici) ;
-- exécution de commandes arbitraires — exclu par conception, pas par manque de temps.
+- multi-machine fleets and aggregation;
+- alerts by email, Telegram or desktop notification;
+- user accounts, roles, multi-user authentication;
+- containers and virtual machines (`docker` absent, `virbr0` down);
+- NVIDIA GPUs (`nvidia-smi` absent, AMD GPU here);
+- running arbitrary commands — excluded by design, not for lack of time;
+- right-to-left locales and translator tooling: the catalogue mechanism supports more
+  languages, but only `en` and `fr` ship.
 
-## 17. Risques connus
+## 18. Known risks
 
-1. **Une action `apt` échoue à mi-parcours** et laisse dpkg en état incohérent. Le
-   risque existe déjà en ligne de commande ; l'atténuation est la sortie complète
-   affichée et journalisée, plus un constat « dpkg interrompu, exécutez
-   `sudo dpkg --configure -a` » détecté au cycle suivant.
-2. **L'exposition LAN élargit la surface.** Atténuée par le jeton, le refus d'action
-   à distance par défaut et le catalogue fermé — mais le choix reste conscient et
-   documenté ici.
-3. **D'autres capteurs peuvent mentir comme la batterie.** Le contrôle de
-   plausibilité (§7.6) couvre les grandeurs connues, mais un pilote peut inventer
-   une valeur *dans* le domaine admis. Aucune parade générale ; la comparaison à
-   l'historique signale au moins les sauts impossibles.
-4. **Le format de sortie de `smartctl` varie** selon les modèles. La sonde utilise
-   `--json` et dégrade proprement si un champ manque.
-5. **`unattended-upgrades` peut agir pendant qu'un `apt.upgrade` manuel tourne.** Le
-   verrou apt le protège ; l'action affiche alors « verrou occupé » plutôt que
-   d'échouer sans explication.
+1. **An `apt` action fails midway** and leaves dpkg inconsistent. The risk already
+   exists on the command line; the mitigation is the full output displayed and
+   logged, plus a finding "dpkg interrupted, run `sudo dpkg --configure -a`"
+   detected on the next cycle.
+2. **LAN exposure widens the attack surface.** Mitigated by the token, actions
+   refused remotely by default, and the closed catalogue — but the choice remains
+   deliberate and is documented here.
+3. **Other sensors may lie like the battery.** The plausibility checks (§7.6) cover
+   known quantities, but a driver can invent a value *inside* the accepted domain.
+   There is no general defence; comparison against history at least flags impossible
+   jumps.
+4. **`smartctl` output varies** by model. The probe uses `--json` and degrades
+   cleanly when a field is missing.
+5. **`unattended-upgrades` may act while a manual `apt.upgrade` runs.** The apt lock
+   protects the system; the action then reports "lock busy" rather than failing
+   without explanation.
+6. **Translation drift.** Catalogues can diverge as findings are added. The
+   completeness tests (§11.4) turn that into a build failure rather than a silent
+   English string in a French interface.

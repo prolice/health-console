@@ -1,89 +1,98 @@
 # Health Console
 
-Une console web locale qui présente la santé d'une machine Ubuntu selon deux
-lectures assumées : un **mode Simple**, en français courant, compréhensible sans
-culture technique, et un **mode Expert** qui expose tout.
+A local web console that reports the health of an Ubuntu machine through two
+deliberate readings: a **Simple mode** in plain language, understandable without a
+technical background, and an **Expert mode** that exposes everything.
 
-> **État du projet : conception.** Le document de conception est complet et validé ;
-> **il n'y a pas encore de code**. Ce dépôt n'est pas installable en l'état.
+> **Project status: design.** The design document is complete and approved;
+> **there is no code yet**. This repository is not installable as it stands.
 
-## L'idée
+## The idea
 
-Afficher `77 °C` est trivial. Dire **si c'est grave** est le produit.
+Displaying `77 °C` is trivial. Saying **whether that is bad** is the product.
 
-La plupart des outils de supervision s'adressent à des administrateurs système et
-laissent l'utilisateur seul face à des chiffres. Health Console fait le travail
-inverse : elle mesure comme un outil sérieux, puis elle **interprète**.
+Most monitoring tools address system administrators and leave the user alone with
+numbers. Health Console does the opposite: it measures like a serious tool, then it
+**interprets**.
 
-- « Le disque gagne 1,8 Go par semaine, saturation estimée en mars 2027 »
-  plutôt que `9% /dev/sda2`
-- Un score de santé dont **chaque point perdu est traçable** à un constat précis —
-  pas le chiffre magique inexplicable des logiciels d'antivirus
-- Des actions correctives à portée de clic, issues d'un **catalogue fermé**
+- "The disk grows by 1.8 GB per week, projected full in March 2027" rather than
+  `9% /dev/sda2`
+- A health score where **every lost point is traceable** to a named finding — not the
+  unexplainable magic number of antivirus software
+- Corrective actions one click away, drawn from a **closed catalogue**
 
-## Principes de conception
+## Design principles
 
-**La mesure et le jugement sont séparés.** Les sondes ne produisent que des
-chiffres ; les règles ne raisonnent que sur des chiffres. Toute la logique
-d'interprétation est donc une fonction pure, testable sans matériel.
+**Measurement and judgement are separate.** Probes produce only numbers; rules reason
+only about numbers. All interpretation logic is a pure function, testable without
+hardware.
 
-**L'outil n'a pas le droit de mentir.** Si le flux de données tombe, la page grise
-les valeurs et affiche depuis quand elles sont figées. Si un capteur renvoie une
-valeur invraisemblable — cas réel : un pilote de batterie qui annonce une charge de
-46 700 % — la console affiche « incohérent » plutôt qu'un chiffre faux. Une console
-de santé qui ment sur sa propre fraîcheur est un piège.
+**The tool is not allowed to lie.** If the data stream drops, the page dims the
+values and says since when they have been frozen. If a sensor reports an implausible
+value — a real case here: a battery driver announcing a 46,700 % charge — the console
+shows "incoherent" rather than a wrong number. A health console that lies about its
+own freshness is a trap.
 
-**Le bruit détruit la confiance.** 59 erreurs par jour dans le journal, c'est le
-régime normal d'un Linux de bureau. Les remonter brutes ferait paniquer pour rien,
-après quoi plus personne ne lit les vraies alertes. Les erreurs sont regroupées par
-motif ; seul ce qui est nouveau ou en accélération est signalé.
+**Noise destroys trust.** 59 journal errors a day is the normal background of a Linux
+desktop. Reporting them raw would cause panic over nothing, after which nobody reads
+the real alerts. Errors are grouped by pattern; only what is new or accelerating is
+reported.
 
-**Un outil de santé ne doit pas nuire à la santé de la machine.** Budget cible :
-moins de 60 Mo de mémoire résidente, moins de 2 % de CPU en moyenne, et une base
-d'environ 32 Mo avec les réglages par défaut. Le direct à 2 secondes vit en mémoire ;
-seul un échantillon toutes les 30 secondes est écrit sur disque. Les durées de
-conservation se règlent en nombre de jours, et le service annonce la taille de base
-qu'elles impliquent **avant** qu'elle ne soit atteinte.
+**A health tool must not harm the machine's health.** Target budget: under 60 MB
+resident memory, under 2 % CPU on average, and a database of about 32 MB with default
+settings. The 2-second live view lives in memory; only one sample every 30 seconds is
+written to disk. Retention periods are set in days, and the service announces the
+database size they imply **before** it is reached.
+
+**Wording is data, not code.** Findings carry an identifier and parameters, never a
+sentence. All user-facing text lives in message catalogues, so the interface ships in
+English and French — and a missing translation is a failing test, not a hole the user
+discovers.
 
 ## Architecture
 
-Python de la bibliothèque standard, `psutil` et SQLite. **Aucune dépendance `pip`,
-aucun environnement virtuel, aucune étape de compilation, aucun CDN** — un outil de
-diagnostic doit fonctionner sans Internet, et survivre aux mises à jour de la
-distribution.
+Python standard library, `psutil` and SQLite. **No `pip` dependency, no virtualenv, no
+build step, no CDN** — a diagnostic tool must work without Internet access, and
+survive distribution upgrades.
 
-Le collecteur travaille à deux cadences : 2 secondes pour ce qui est gratuit à lire
-(`/proc`, `/sys`), 5 minutes pour ce qui coûte cher (SMART, APT, systemd). Le
-serveur HTTP diffuse l'état en SSE. Le front est du HTML, du CSS et des modules ES
-natifs, graphiques SVG dessinés à la main.
+The collector runs at two cadences: 2 seconds for what is cheap to read (`/proc`,
+`/sys`), 5 minutes for what is expensive (SMART, APT, systemd). The HTTP server
+streams state over SSE. The front end is HTML, CSS and native ES modules, with
+hand-drawn SVG charts.
 
-Conception détaillée :
+Full design:
 [`docs/superpowers/specs/2026-08-29-health-console-design.md`](docs/superpowers/specs/2026-08-29-health-console-design.md)
 
-## Avertissements de sécurité
+## Security notes
 
-Ce projet est conçu pour **un poste personnel sur un réseau de confiance**. Lis ceci
-avant de le déployer ailleurs.
+This project targets **a personal machine on a trusted network**. Read this before
+deploying it anywhere else.
 
-- **Il exécute des commandes privilégiées.** Mises à jour APT, redémarrage de
-  services, extinction de la machine. L'installation pose une règle `sudoers.d`
-  restreinte à une liste nommée de binaires avec leurs arguments figés — jamais
-  `ALL`, jamais de joker.
-- **Il n'existe aucune route « exécute cette commande ».** Le catalogue d'actions
-  est déclaré en dur ; le navigateur envoie un identifiant, jamais un fragment de
-  commande. `shell=False`, aucune interpolation de texte venu du réseau.
-- **Il écoute sur le réseau local**, protégé par un jeton. Les actions sont
-  **refusées hors de `127.0.0.1`** sauf activation explicite en configuration :
-  consulter et agir n'ont pas le même coût quand on se trompe.
-- **Il n'est pas conçu pour être exposé sur Internet.** Ne le fais pas.
-- Chaque action est journalisée avec son heure, sa source, son code de retour et sa
-  sortie complète.
+- **It runs privileged commands.** APT upgrades, service restarts, machine shutdown.
+  Installation writes a `sudoers.d` rule restricted to a named list of binaries with
+  fixed arguments — never `ALL`, never a wildcard.
+- **There is no "run this command" route.** The action catalogue is declared in code;
+  the browser sends an identifier, never a command fragment. `shell=False`, and no
+  text from the network is interpolated into an argument list.
+- **It listens on the local network**, protected by a token. Actions are **refused
+  outside `127.0.0.1`** unless explicitly enabled in configuration: reading and acting
+  do not carry the same cost when you get it wrong.
+- **It is not designed to face the Internet.** Do not put it there.
+- Every action is logged with its timestamp, source, exit code and full output.
 
-## Cible
+## Target
 
-Ubuntu 26.04 LTS. Les principes valent pour toute distribution récente, mais les
-sondes APT, snap et systemd sont spécifiques à Debian/Ubuntu.
+Ubuntu 26.04 LTS. The principles hold for any recent distribution, but the APT, snap
+and systemd probes are Debian/Ubuntu-specific.
 
-## Licence
+## Languages
 
-MIT — voir [LICENSE](LICENSE).
+The interface ships in **English (default) and French**, selectable in the page and
+remembered between visits. Adding a language means adding one catalogue file under
+`web/i18n/`; the test suite then requires it to be complete.
+
+Code, comments, documentation and commit messages are in English.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -14,9 +14,9 @@ from types import ModuleType
 FAST = "fast"
 SLOW = "slow"
 
-# Later tasks extend this tuple as they add probe modules.
+# This is the complete set of probes for this plan.
 PROBE_MODULES: tuple[str, ...] = (
-    "cpu", "memory",
+    "cpu", "memory", "thermal", "network", "battery",
 )
 
 

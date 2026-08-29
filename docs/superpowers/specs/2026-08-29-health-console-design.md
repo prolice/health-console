@@ -43,7 +43,7 @@ These measurements are not decoration: each one constrains a decision.
   no virtualenv.**
 - **Resources** — 4 cores, 5.2 GB of RAM with ~1.5 GB actually available.
   → **Budget: < 60 MB RSS for the service, < 2 % CPU on average, default database
-  ≈ 32 MB.** A health tool that degrades the health of the machine is a design
+  ≈ 54 MB.** A health tool that degrades the health of the machine is a design
   failure. This budget is what forces the display cadence (2 s, in memory) apart
   from the write cadence (30 s, to disk) — see §6.1.
 - **Hardware** — Crucial MX300 489 GB SSD (`/dev/sda`), AMD Radeon HD 6730M GPU,
@@ -160,8 +160,10 @@ sparkline over the last 60 minutes needs a point every 2 seconds; a 90-day trend
 needs nothing of the sort.
 
 - **In-memory ring buffer** — 2 s resolution over a rolling 60 minutes. It feeds the
-  live view and the sparklines. 1,800 points × ~25 metrics × 8 bytes
-  ≈ **360 KiB of RAM**. Nothing is written to disk at that cadence.
+  live view and the sparklines. Measured (`tracemalloc`, 1,800 points × ~25
+  metrics stored as `(float, float)` tuples in a deque — CPython object overhead
+  dominates over the 8-byte C doubles an earlier, unmeasured estimate assumed):
+  ≈ **5.3 MB of RAM**. Nothing is written to disk at that cadence.
 - **Database** — one write every 30 s (`store_seconds`), aggregated from the ring
   (average, min, max). More than enough for history, and it **divides the volume by
   15**.
@@ -221,10 +223,13 @@ machine:
 
 ```
 rows/day  = 86400 / store_seconds × metric_count
-size      ≈ raw_days × 2.9 MB  +  aggregate_days × 0.29 MB  +  ~3 MB (rest)
+size      ≈ raw_days × 4.9 MB  +  aggregate_days × 0.49 MB  +  ~3 MB (rest)
 ```
 
-With the defaults on this machine (~25 metrics): **≈ 32 MB**.
+using **68 bytes per metric row** (`BYTES_PER_METRIC_ROW`, measured on 500,000
+rows — not the 40-byte guess an earlier draft of this section used, which
+understated the total by about 45%). With the defaults on this machine
+(~25 metrics): **≈ 54 MB**.
 
 Beyond 500 MB projected, startup prints an explicit warning naming the estimate and
 the setting responsible — **but does not block**: it is the user's machine and the

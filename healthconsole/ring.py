@@ -1,8 +1,12 @@
 """In-memory ring buffer covering the last 60 minutes.
 
 Displaying finely and keeping long are two distinct needs, and conflating them
-makes the database explode. The 2-second live view lives here — roughly 360 KiB
-for 25 metrics — and only a value aggregated every 30 seconds reaches the disk.
+makes the database explode. The 2-second live view lives here — measured at
+about 5.3 MB for 25 metrics (tracemalloc, 1,800 points per metric) — and only
+a value aggregated every 30 seconds reaches the disk. The earlier "~360 KiB"
+figure assumed 1,800 x 25 x 8-byte C doubles; CPython instead stores each
+point as a `(float, float)` tuple in a deque, and object overhead dominates.
+Still well inside the 60 MB memory budget.
 """
 
 from __future__ import annotations

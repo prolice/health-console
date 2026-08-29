@@ -54,6 +54,14 @@ class TestIndex(unittest.TestCase):
         self.assertIsNone(
             match, f"index.html hard-codes {match and match.group(0)}")
 
+    def test_tabs_are_associated_with_their_panels(self):
+        # role="tab" inside role="tablist" is not enough on its own: a
+        # screen reader needs aria-controls/aria-labelledby to link each
+        # tab to the panel it toggles.
+        self.assertIn('aria-controls="simple"', self.html)
+        self.assertIn('aria-controls="expert"', self.html)
+        self.assertEqual(self.html.count('role="tabpanel"'), 2)
+
 
 class TestStyle(unittest.TestCase):
     def setUp(self):
@@ -108,6 +116,14 @@ class TestApp(unittest.TestCase):
 
     def test_missing_key_falls_back_rather_than_showing_the_key(self):
         self.assertIn("FALLBACK_LOCALE", self.js)
+
+    def test_catalogue_fetch_is_defensive(self):
+        # A missing or broken catalogue file must not silently blank the
+        # page: the fetch is checked for failure and guarded by a try.
+        self.assertIn("response.ok", self.js)
+        self.assertRegex(
+            self.js, r"try\s*\{[^}]*loadCatalogue\(",
+            "loadCatalogue is not called inside a try block")
 
 
 if __name__ == "__main__":

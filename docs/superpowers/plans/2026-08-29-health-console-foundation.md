@@ -4099,6 +4099,14 @@ class TestIndex(unittest.TestCase):
         self.assertIsNone(
             match, f"index.html hard-codes {match and match.group(0)}")
 
+    def test_tabs_are_associated_with_their_panels(self):
+        # role="tab" inside role="tablist" is not enough on its own: a
+        # screen reader needs aria-controls/aria-labelledby to link each
+        # tab to the panel it toggles.
+        self.assertIn('aria-controls="simple"', self.html)
+        self.assertIn('aria-controls="expert"', self.html)
+        self.assertEqual(self.html.count('role="tabpanel"'), 2)
+
 
 class TestStyle(unittest.TestCase):
     def setUp(self):
@@ -4154,6 +4162,14 @@ class TestApp(unittest.TestCase):
     def test_missing_key_falls_back_rather_than_showing_the_key(self):
         self.assertIn("FALLBACK_LOCALE", self.js)
 
+    def test_catalogue_fetch_is_defensive(self):
+        # A missing or broken catalogue file must not silently blank the
+        # page: the fetch is checked for failure and guarded by a try.
+        self.assertIn("response.ok", self.js)
+        self.assertRegex(
+            self.js, r"try\s*\{[^}]*loadCatalogue\(",
+            "loadCatalogue is not called inside a try block")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -4183,8 +4199,8 @@ render time, so no English wording is baked into the markup.
     <h1 id="app-title"></h1>
     <div class="controls">
       <div class="modes" id="mode-group" role="tablist">
-        <button id="mode-simple" role="tab" aria-selected="true"></button>
-        <button id="mode-expert" role="tab" aria-selected="false"></button>
+        <button id="mode-simple" role="tab" aria-selected="true" aria-controls="simple"></button>
+        <button id="mode-expert" role="tab" aria-selected="false" aria-controls="expert"></button>
       </div>
       <label class="locale-field">
         <span id="locale-label"></span>
@@ -4198,7 +4214,7 @@ render time, so no English wording is baked into the markup.
 
   <p id="freshness" class="freshness" aria-live="polite"></p>
 
-  <main id="simple" class="view">
+  <main id="simple" class="view" role="tabpanel" aria-labelledby="mode-simple">
     <section class="verdict" aria-live="polite">
       <p class="verdict-state">
         <span id="verdict-icon" aria-hidden="true"></span>
@@ -4213,7 +4229,7 @@ render time, so no English wording is baked into the markup.
     <div id="findings"></div>
   </main>
 
-  <main id="expert" class="view" hidden>
+  <main id="expert" class="view" role="tabpanel" aria-labelledby="mode-expert" hidden>
     <p id="expert-placeholder"></p>
     <pre id="raw"></pre>
   </main>
@@ -4337,6 +4353,7 @@ let timeFormat = new Intl.DateTimeFormat(locale,
   { hour: "2-digit", minute: "2-digit" });
 let lastState = null;
 let lastUpdate = Date.now();
+let isStale = false;
 
 function el(id) { return document.getElementById(id); }
 
@@ -4380,12 +4397,29 @@ export function formatBytes(bytes) {
 
 async function loadCatalogue(target) {
   const response = await fetch(`/static/i18n/${target}.json`);
+  if (!response.ok) {
+    throw new Error(`catalogue unavailable: ${target} (${response.status})`);
+  }
   return response.json();
 }
 
 export async function setLocale(target) {
-  locale = AVAILABLE_LOCALES.includes(target) ? target : FALLBACK_LOCALE;
-  catalogue = await loadCatalogue(locale);
+  const requested = AVAILABLE_LOCALES.includes(target) ? target : FALLBACK_LOCALE;
+  if (requested === FALLBACK_LOCALE) {
+    catalogue = fallback;
+    locale = FALLBACK_LOCALE;
+  } else {
+    try {
+      catalogue = await loadCatalogue(requested);
+      locale = requested;
+    } catch (error) {
+      // A broken non-default catalogue must not take the page down: fall
+      // back to the already-loaded English catalogue instead of aborting.
+      console.warn(`falling back to ${FALLBACK_LOCALE} after ${requested} failed to load`, error);
+      catalogue = fallback;
+      locale = FALLBACK_LOCALE;
+    }
+  }
   numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
   timeFormat = new Intl.DateTimeFormat(locale,
     { hour: "2-digit", minute: "2-digit" });
@@ -4451,11 +4485,15 @@ export function render(state) {
   }
 
   el("raw").textContent = JSON.stringify(state, null, 2);
-  markFreshness(state.ts * 1000, false);
+  markFreshness(isStale);
 }
 
-function markFreshness(milliseconds, stale) {
+function markFreshness(stale) {
+  // While stale, the banner must keep showing the last real update time,
+  // never the timestamp of whatever just got (re)painted — a locale
+  // switch during an outage must repaint the stale message, not erase it.
   const zone = el("freshness");
+  const milliseconds = stale ? lastUpdate : lastState.ts * 1000;
   const time = timeFormat.format(new Date(milliseconds));
   zone.classList.toggle("stale", stale);
   document.body.classList.toggle("stale", stale);
@@ -4476,26 +4514,44 @@ function connect() {
   const source = new EventSource("/api/stream");
   source.addEventListener("state", (event) => {
     lastUpdate = Date.now();
+    isStale = false;
     render(JSON.parse(event.data));
   });
-  source.addEventListener("error", () => markFreshness(lastUpdate, true));
+  source.addEventListener("error", () => {
+    isStale = true;
+    markFreshness(true);
+  });
   setInterval(() => {
-    if (Date.now() - lastUpdate > STALE_AFTER_MS) markFreshness(lastUpdate, true);
+    if (Date.now() - lastUpdate > STALE_AFTER_MS) {
+      isStale = true;
+      markFreshness(true);
+    }
   }, 5000);
 }
 
 async function start() {
-  fallback = await loadCatalogue(FALLBACK_LOCALE);
   el("mode-simple").addEventListener("click", () => switchMode("simple"));
   el("mode-expert").addEventListener("click", () => switchMode("expert"));
   el("locale").addEventListener("change", (event) =>
     setLocale(event.target.value));
   switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
-  await setLocale(pickLocale());
   try {
-    render(await (await fetch("/api/now")).json());
+    fallback = await loadCatalogue(FALLBACK_LOCALE);
+    await setLocale(pickLocale());
+    try {
+      render(await (await fetch("/api/now")).json());
+    } catch (error) {
+      console.warn("initial state unavailable", error);
+    }
   } catch (error) {
-    console.warn("initial state unavailable", error);
+    // The catalogue itself is what failed here, so there is nothing left
+    // to translate this sentence with: every other text node in
+    // index.html starts empty, and without this literal sentence the
+    // viewer would see a blank page with no sign anything is wrong. Do
+    // not "fix" this back to a translate() call.
+    console.warn("catalogue unavailable, interface text cannot be shown", error);
+    el("freshness").textContent =
+      "Interface text failed to load. Please reload the page.";
   }
   connect();
 }

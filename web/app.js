@@ -13,6 +13,7 @@ let timeFormat = new Intl.DateTimeFormat(locale,
   { hour: "2-digit", minute: "2-digit" });
 let lastState = null;
 let lastUpdate = Date.now();
+let isStale = false;
 
 function el(id) { return document.getElementById(id); }
 
@@ -56,12 +57,29 @@ export function formatBytes(bytes) {
 
 async function loadCatalogue(target) {
   const response = await fetch(`/static/i18n/${target}.json`);
+  if (!response.ok) {
+    throw new Error(`catalogue unavailable: ${target} (${response.status})`);
+  }
   return response.json();
 }
 
 export async function setLocale(target) {
-  locale = AVAILABLE_LOCALES.includes(target) ? target : FALLBACK_LOCALE;
-  catalogue = await loadCatalogue(locale);
+  const requested = AVAILABLE_LOCALES.includes(target) ? target : FALLBACK_LOCALE;
+  if (requested === FALLBACK_LOCALE) {
+    catalogue = fallback;
+    locale = FALLBACK_LOCALE;
+  } else {
+    try {
+      catalogue = await loadCatalogue(requested);
+      locale = requested;
+    } catch (error) {
+      // A broken non-default catalogue must not take the page down: fall
+      // back to the already-loaded English catalogue instead of aborting.
+      console.warn(`falling back to ${FALLBACK_LOCALE} after ${requested} failed to load`, error);
+      catalogue = fallback;
+      locale = FALLBACK_LOCALE;
+    }
+  }
   numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
   timeFormat = new Intl.DateTimeFormat(locale,
     { hour: "2-digit", minute: "2-digit" });
@@ -127,11 +145,15 @@ export function render(state) {
   }
 
   el("raw").textContent = JSON.stringify(state, null, 2);
-  markFreshness(state.ts * 1000, false);
+  markFreshness(isStale);
 }
 
-function markFreshness(milliseconds, stale) {
+function markFreshness(stale) {
+  // While stale, the banner must keep showing the last real update time,
+  // never the timestamp of whatever just got (re)painted — a locale
+  // switch during an outage must repaint the stale message, not erase it.
   const zone = el("freshness");
+  const milliseconds = stale ? lastUpdate : lastState.ts * 1000;
   const time = timeFormat.format(new Date(milliseconds));
   zone.classList.toggle("stale", stale);
   document.body.classList.toggle("stale", stale);
@@ -152,26 +174,44 @@ function connect() {
   const source = new EventSource("/api/stream");
   source.addEventListener("state", (event) => {
     lastUpdate = Date.now();
+    isStale = false;
     render(JSON.parse(event.data));
   });
-  source.addEventListener("error", () => markFreshness(lastUpdate, true));
+  source.addEventListener("error", () => {
+    isStale = true;
+    markFreshness(true);
+  });
   setInterval(() => {
-    if (Date.now() - lastUpdate > STALE_AFTER_MS) markFreshness(lastUpdate, true);
+    if (Date.now() - lastUpdate > STALE_AFTER_MS) {
+      isStale = true;
+      markFreshness(true);
+    }
   }, 5000);
 }
 
 async function start() {
-  fallback = await loadCatalogue(FALLBACK_LOCALE);
   el("mode-simple").addEventListener("click", () => switchMode("simple"));
   el("mode-expert").addEventListener("click", () => switchMode("expert"));
   el("locale").addEventListener("change", (event) =>
     setLocale(event.target.value));
   switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
-  await setLocale(pickLocale());
   try {
-    render(await (await fetch("/api/now")).json());
+    fallback = await loadCatalogue(FALLBACK_LOCALE);
+    await setLocale(pickLocale());
+    try {
+      render(await (await fetch("/api/now")).json());
+    } catch (error) {
+      console.warn("initial state unavailable", error);
+    }
   } catch (error) {
-    console.warn("initial state unavailable", error);
+    // The catalogue itself is what failed here, so there is nothing left
+    // to translate this sentence with: every other text node in
+    // index.html starts empty, and without this literal sentence the
+    // viewer would see a blank page with no sign anything is wrong. Do
+    // not "fix" this back to a translate() call.
+    console.warn("catalogue unavailable, interface text cannot be shown", error);
+    el("freshness").textContent =
+      "Interface text failed to load. Please reload the page.";
   }
   connect();
 }

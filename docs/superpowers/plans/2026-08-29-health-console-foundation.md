@@ -151,6 +151,41 @@ class TestValidation(unittest.TestCase):
         self.assertIn(str(path), str(ctx.exception))
 
 
+class TestServerConfig(unittest.TestCase):
+    def test_allow_remote_actions_string_false_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nallow_remote_actions = "false"\n'))
+        self.assertIn("allow_remote_actions", str(ctx.exception))
+
+    def test_allow_remote_actions_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nallow_remote_actions = 1\n'))
+        self.assertIn("allow_remote_actions", str(ctx.exception))
+
+    def test_allow_remote_actions_boolean_true_loads(self):
+        cfg = load_config(write_toml('[server]\nallow_remote_actions = true\n'))
+        self.assertTrue(cfg.allow_remote_actions)
+
+    def test_token_as_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\ntoken = 12345\n'))
+        self.assertIn("token", str(ctx.exception))
+
+    def test_bind_as_integer_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(write_toml('[server]\nbind = 42\n'))
+        self.assertIn("bind", str(ctx.exception))
+
+    def test_valid_server_section_loads(self):
+        cfg = load_config(write_toml(
+            '[server]\nbind = "127.0.0.1"\nport = 9000\n'
+            'allow_remote_actions = false\ntoken = "secret"\n'))
+        self.assertEqual(cfg.bind, "127.0.0.1")
+        self.assertEqual(cfg.port, 9000)
+        self.assertFalse(cfg.allow_remote_actions)
+        self.assertEqual(cfg.token, "secret")
+
+
 class TestEstimate(unittest.TestCase):
     def test_default_config_estimates_about_32_MB(self):
         size = estimate_db_bytes(Config(), n_metrics=25)
@@ -248,6 +283,24 @@ def _int_field(table: dict, name: str, default: int, section: str) -> int:
     return value
 
 
+def _bool_field(table: dict, name: str, default: bool, section: str) -> bool:
+    value = table.get(name, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"[{section}] {name} must be a boolean, "
+            f"got: {value!r}")
+    return value
+
+
+def _str_field(table: dict, name: str, default: str, section: str) -> str:
+    value = table.get(name, default)
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"[{section}] {name} must be a string, "
+            f"got: {value!r}")
+    return value
+
+
 def load_config(path: Path | None = None) -> Config:
     path = DEFAULT_CONFIG_PATH if path is None else path
     data: dict = {}
@@ -259,30 +312,30 @@ def load_config(path: Path | None = None) -> Config:
 
     retention_table = data.get("retention", {})
     retention = Retention(
-        raw_days=_int_field(retention_table, "raw_days", 2, "retention"),
+        raw_days=_int_field(retention_table, "raw_days", Retention.raw_days, "retention"),
         aggregate_days=_int_field(
-            retention_table, "aggregate_days", 90, "retention"),
+            retention_table, "aggregate_days", Retention.aggregate_days, "retention"),
         snapshot_days=_int_field(
-            retention_table, "snapshot_days", 7, "retention"),
-        event_days=_int_field(retention_table, "event_days", 365, "retention"),
-        audit_days=_int_field(retention_table, "audit_days", 365, "retention"),
+            retention_table, "snapshot_days", Retention.snapshot_days, "retention"),
+        event_days=_int_field(retention_table, "event_days", Retention.event_days, "retention"),
+        audit_days=_int_field(retention_table, "audit_days", Retention.audit_days, "retention"),
     )
     sampling_table = data.get("sampling", {})
     sampling = Sampling(
         live_seconds=_int_field(
-            sampling_table, "live_seconds", 2, "sampling"),
+            sampling_table, "live_seconds", Sampling.live_seconds, "sampling"),
         store_seconds=_int_field(
-            sampling_table, "store_seconds", 30, "sampling"),
+            sampling_table, "store_seconds", Sampling.store_seconds, "sampling"),
     )
     server_table = data.get("server", {})
     cfg = Config(
         retention=retention,
         sampling=sampling,
-        bind=server_table.get("bind", "0.0.0.0"),
-        port=_int_field(server_table, "port", 8787, "server"),
-        allow_remote_actions=bool(
-            server_table.get("allow_remote_actions", False)),
-        token=str(server_table.get("token", "")),
+        bind=_str_field(server_table, "bind", Config.bind, "server"),
+        port=_int_field(server_table, "port", Config.port, "server"),
+        allow_remote_actions=_bool_field(
+            server_table, "allow_remote_actions", Config.allow_remote_actions, "server"),
+        token=_str_field(server_table, "token", Config.token, "server"),
     )
     validate(cfg)
     return cfg
@@ -1762,6 +1815,24 @@ class TestEvaluate(unittest.TestCase):
         self.assertEqual(
             cpu.evaluate({"status": "unavailable", "reason": "x"}, context()), [])
 
+    def test_implausible_usage_produces_no_finding_even_while_sustained(self):
+        # A breach sustained by earlier valid ticks does not justify emitting a
+        # finding with an implausible sensor value.
+        sample = {"status": "ok", "usage_pct": 4700.0, "freq_hz": 3.4e9,
+                  "load1": 0.3, "cores": 4}
+        self.assertEqual(
+            cpu.evaluate(sample, context({"cpu.usage_high": True})), [])
+
+    def test_sustained_load_produces_finding_with_checked_params(self):
+        # Verify the normal sustained-load case still produces a finding with
+        # plausibility-checked params.
+        findings = cpu.evaluate(self.BUSY, context({"cpu.usage_high": True}))
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.id, "cpu.usage_high")
+        self.assertEqual(finding.params["usage_pct"], 99.0)
+        self.assertIn("sustain_minutes", finding.params)
+
 
 class TestCollectSmoke(unittest.TestCase):
     def test_collect_returns_a_usable_sample(self):
@@ -1833,6 +1904,28 @@ class TestEvaluate(unittest.TestCase):
         self.assertEqual(memory.evaluate(
             {"status": "unavailable", "reason": "x"}, context()), [])
 
+    def test_implausible_available_pct_produces_no_finding_even_with_active_swap(self):
+        # Implausible available_pct must not result in a finding, even if swap
+        # is genuinely active. We cannot honestly claim memory pressure with
+        # unchecked sensor data.
+        implausible = {"status": "ok", "total": 5 * GIB,
+                       "available": int(5 * GIB * 10 / 100),
+                       "available_pct": 4700.0, "swap_used": 512 * 1024 ** 2,
+                       "swap_total": 2 * GIB}
+        self.assertEqual(memory.evaluate(implausible, context()), [])
+
+    def test_low_memory_with_active_swap_produces_finding_with_checked_params(self):
+        # Verify the normal low-memory-with-swap case still produces a finding
+        # with plausibility-checked params.
+        findings = memory.evaluate(
+            sample(10.0, swap_used=512 * 1024 ** 2), context())
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.id, "memory.pressure")
+        self.assertIn("available_bytes", finding.params)
+        self.assertIn("available_pct", finding.params)
+        self.assertIn("swap_used_bytes", finding.params)
+
 
 class TestCollectSmoke(unittest.TestCase):
     def test_collect_returns_a_usable_sample(self):
@@ -1869,8 +1962,9 @@ from types import ModuleType
 FAST = "fast"
 SLOW = "slow"
 
+# Later tasks extend this tuple as they add probe modules.
 PROBE_MODULES: tuple[str, ...] = (
-    "cpu", "memory", "thermal", "network", "battery",
+    "cpu", "memory",
 )
 
 
@@ -1956,7 +2050,13 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
         return []
     if not ctx.sustained.get("cpu.usage_high"):
         return []
-    usage = sample.get("usage_pct")
+    # Do not emit a finding with an unchecked sensor value. A breach that was
+    # sustained by earlier valid ticks does not justify displaying a wrong number.
+    usage = sane("percent", sample.get("usage_pct"))
+    if usage is None:
+        return []
+    load1 = sane("load", sample.get("load1"))
+    load1_str = f"{load1}" if load1 is not None else "unknown"
     return [Finding(
         id="cpu.usage_high",
         severity=Severity.ATTENTION,
@@ -1964,7 +2064,7 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
                 "sustain_minutes": rules.CPU_USAGE_SUSTAIN_SECONDS // 60},
         detail=(f"usage={usage:.0f}% sustained >= "
                 f"{rules.CPU_USAGE_SUSTAIN_SECONDS}s · "
-                f"load1={sample.get('load1')} over {sample.get('cores')} cores"),
+                f"load1={load1_str} over {sample.get('cores')} cores"),
     )]
 ```
 
@@ -2019,21 +2119,28 @@ def metrics(sample: dict) -> dict[str, float]:
 def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
     if sample.get("status") != "ok":
         return []
-    available_pct = sample.get("available_pct")
-    swap_used = sample.get("swap_used", 0)
+    # Check plausibility of all values before putting them in user-facing params.
+    available_pct = sane("percent", sample.get("available_pct"))
+    available = sane("bytes", sample.get("available"))
+    swap_used = sane("bytes", sample.get("swap_used", 0))
+    # We cannot honestly describe memory pressure without trustworthy figures.
+    if available_pct is None or available is None:
+        return []
+    if swap_used is None:
+        return []
     # Low "free" memory is Linux behaving normally: the cache fills whatever is
     # unused. Only active swapping signals real pressure.
-    if available_pct is None or available_pct >= rules.MEM_ATTENTION_AVAILABLE_PCT:
+    if available_pct >= rules.MEM_ATTENTION_AVAILABLE_PCT:
         return []
     if swap_used < rules.MEM_SWAP_ACTIVE_BYTES:
         return []
     return [Finding(
         id="memory.pressure",
         severity=Severity.ATTENTION,
-        params={"available_bytes": sample["available"],
+        params={"available_bytes": available,
                 "available_pct": available_pct,
                 "swap_used_bytes": swap_used},
-        detail=(f"available={sample['available'] / GIB:.2f} GiB "
+        detail=(f"available={available / GIB:.2f} GiB "
                 f"({available_pct:.1f}%) · swap_used={swap_used / GIB:.2f} GiB"),
     )]
 ```
@@ -2065,12 +2172,13 @@ Linux behaving normally, the cache filling whatever is unused."
 ### Task 9: Thermal, network and battery probes
 
 **Files:**
+- Modify: `healthconsole/probes/__init__.py`
 - Create: `healthconsole/probes/thermal.py`, `healthconsole/probes/network.py`, `healthconsole/probes/battery.py`
 - Create: `tests/test_probes_thermal.py`, `tests/test_probes_network.py`, `tests/test_probes_battery.py`
 
 **Interfaces:**
 - Consumes: `probes.EvalContext`, `plausibility.sane`, `plausibility.battery_capacity_is_coherent`
-- Produces: three modules honouring the Task 8 contract, plus `network.rates(previous: dict, current: dict, dt: float) -> dict[str, float]` (pure) and `battery.wear_pct(full: float, design: float) -> float | None`
+- Produces: three modules honouring the Task 8 contract, plus `network.rates(previous: dict, current: dict, dt: float) -> dict[str, float]` (pure) and `battery.wear_pct(full: float, design: float) -> float | None`. Extends `PROBE_MODULES` in `probes/__init__.py` to include all five probes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2145,6 +2253,25 @@ class TestEvaluate(unittest.TestCase):
     def test_absent_battery_produces_no_finding(self):
         self.assertEqual(battery.evaluate(
             {"status": "unavailable", "reason": "no battery"}, context()), [])
+
+
+class TestOvercharge(unittest.TestCase):
+    def test_slight_overcharge_is_clamped_not_dropped(self):
+        # The driver may report charge slightly above full right after a
+        # complete charge. battery_capacity_is_coherent tolerates up to 105%.
+        # But a battery cannot be more than fully charged; clamping keeps the
+        # value in the percent domain instead of having it silently dropped
+        # downstream by sane().
+        sample = {
+            "status": "ok", "present": True, "state": "Full",
+            "charge_pct": min(100.0, 1100 / 1050 * 100.0),  # 104.76 -> 100.0
+            "wear_pct": 0.0,
+            "raw": {"charge_now": 1100, "charge_full": 1050,
+                    "charge_full_design": 1000},
+        }
+        metrics = battery.metrics(sample)
+        self.assertIn("battery.charge_pct", metrics)
+        self.assertEqual(metrics["battery.charge_pct"], 100.0)
 
 
 class TestCollectSmoke(unittest.TestCase):
@@ -2502,9 +2629,14 @@ def collect() -> dict:
         return {"status": "incoherent", "raw": raw,
                 "reason": "implausible capacities reported by the driver"}
 
+    # battery_capacity_is_coherent tolerates charge up to 105% of full to absorb
+    # driver rounding after a complete charge. But a battery cannot be more than
+    # fully charged; clamping keeps the value in the percent domain instead of
+    # having it silently dropped downstream by sane().
+    charge_pct = min(100.0, now / full * 100.0)
     return {
         "status": "ok", "present": True, "state": state,
-        "charge_pct": now / full * 100.0,
+        "charge_pct": charge_pct,
         "wear_pct": wear_pct(full, design),
         "raw": raw,
     }
@@ -2544,15 +2676,26 @@ def evaluate(sample: dict, ctx: EvalContext) -> list[Finding]:
         detail=f"wear={wear:.1f}% · {sample.get('raw')}")]
 ```
 
-- [ ] **Step 6: Run the tests to confirm they pass**
+- [ ] **Step 6: Extend the probe registry**
+
+In `healthconsole/probes/__init__.py`, change `PROBE_MODULES` to include all five probes:
+
+```python
+# This is the complete set of probes for this plan.
+PROBE_MODULES: tuple[str, ...] = (
+    "cpu", "memory", "thermal", "network", "battery",
+)
+```
+
+- [ ] **Step 7: Run the tests to confirm they pass**
 
 Run: `./run-tests -v`
 Expected: PASS — the whole suite is green
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add healthconsole/probes tests/test_probes_thermal.py tests/test_probes_network.py tests/test_probes_battery.py
+git add healthconsole/probes/__init__.py healthconsole/probes tests/test_probes_thermal.py tests/test_probes_network.py tests/test_probes_battery.py
 git commit -m "Add the thermal, network and battery probes
 
 The battery probe reads either energy_* or charge_*, and refuses
@@ -2680,6 +2823,36 @@ class TestTick(SchedulerCase):
         self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
         self.assertEqual(state["probes"]["cpu"]["status"], "ok")
 
+    def test_a_raising_evaluate_does_not_stop_the_others_findings(self):
+        class Raising(FakeProbe):
+            NAME = "memory"
+
+            def evaluate(self, sample, ctx):
+                raise RuntimeError("bad rule")
+
+        raising = Raising()
+        self.probe.value = 99.0
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[raising, self.probe])
+        scheduler.tick(now=1000.0)
+        state = scheduler.tick(now=1301.0)
+        self.assertEqual(len(state["findings"]), 1)
+        self.assertEqual(state["probes"]["memory"]["status"], "ok")
+        self.assertIn("RuntimeError", state["probes"]["memory"]["eval_error"])
+
+    def test_a_raising_metrics_marks_the_probe_unavailable(self):
+        class BadMetrics(FakeProbe):
+            NAME = "memory"
+
+            def metrics(self, sample):
+                raise RuntimeError("bad metrics")
+
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[BadMetrics()])
+        state = scheduler.tick(now=1000.0)
+        self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
+        self.assertIn("RuntimeError", state["probes"]["memory"]["reason"])
+
 
 class TestSustained(SchedulerCase):
     def test_brief_spike_produces_no_finding(self):
@@ -2743,17 +2916,25 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'healthconsole.schedule
 The live view fills the in-memory ring; only an aggregated value reaches the
 database. The scheduler is also the only component that knows the clock, which
 is what keeps probes and rules purely functional.
+
+Single-writer invariant: `Store` opens SQLite with `check_same_thread=False`
+and `key_id` performs an unlocked SELECT-then-INSERT, which is safe only
+because exactly one thread writes while HTTP request threads use read-only
+methods. The `Scheduler` is that one writer — it must remain the ONLY
+component that calls `write_metrics`, `aggregate_5m` or `prune`. A second
+write path would race on `metric_key.key UNIQUE` and raise IntegrityError.
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import asdict
 
 from healthconsole import rules
 from healthconsole.config import Config
 from healthconsole.findings import Severity
-from healthconsole.probes import FAST, EvalContext, load_probes
+from healthconsole.probes import FAST, EvalContext, load_probes, unavailable
 from healthconsole.probes import network as network_probe
 from healthconsole.ring import Ring
 from healthconsole.store import Store
@@ -2778,6 +2959,13 @@ EMPTY_STATE: dict = {
 
 
 class Scheduler:
+    """Ties probes, ring, hysteresis and store together on a single clock.
+
+    The Scheduler is the only background writer to the Store: `write_metrics`,
+    `aggregate_5m` and `prune` must never be called from anywhere else, since
+    `Store` assumes a single writer thread (see module docstring above).
+    """
+
     def __init__(self, cfg: Config, store: Store, ring: Ring,
                  probes=None, clock=time.time) -> None:
         self.cfg = cfg
@@ -2805,8 +2993,8 @@ class Scheduler:
                 measurements.update(probe.metrics(sample))
             except Exception as exc:              # noqa: BLE001
                 # A failing probe never brings the others down.
-                samples[probe.NAME] = {"status": "unavailable",
-                                       "reason": f"probe failed: {exc}"}
+                samples[probe.NAME] = unavailable(
+                    f"probe failed: {type(exc).__name__}: {exc}")
 
         measurements.update(self._network_rates(samples, now))
         for key, value in measurements.items():
@@ -2824,7 +3012,18 @@ class Scheduler:
         for probe in self.probes:
             try:
                 findings.extend(probe.evaluate(samples.get(probe.NAME, {}), ctx))
-            except Exception:                     # noqa: BLE001
+            except Exception as exc:              # noqa: BLE001
+                # The reading itself succeeded and was already pushed to the
+                # ring before evaluate() ran; only the judgement failed. That
+                # is a different failure from an unavailable sensor, so the
+                # status is deliberately left as measured rather than
+                # flipped to unavailable, which would misdescribe what broke
+                # and would hide the collected data from Expert mode.
+                sample = samples.get(probe.NAME)
+                if isinstance(sample, dict):
+                    sample["eval_error"] = f"{type(exc).__name__}: {exc}"
+                print(f"{probe.NAME}: evaluate() failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
 
         self._state = {
@@ -2934,6 +3133,7 @@ File `tests/test_server.py`:
 
 ```python
 import json
+import socket
 import threading
 import unittest
 import urllib.error
@@ -3047,6 +3247,53 @@ class TestHttp(unittest.TestCase):
         payload = json.loads(ctx.exception.read())
         self.assertIn("error", payload)
         self.assertIn("detail", payload)
+        self.assertNotIn(" ", payload["error"])
+        self.assertEqual(payload["error"], payload["error"].lower())
+        if payload["detail"]:
+            self.assertNotIn(" ", payload["detail"])
+
+    def test_unsupported_method_still_gets_security_headers_and_json(self):
+        # The base class handles unknown verbs itself, before our routing
+        # ever runs -- that path must not bypass the security headers or
+        # fall back to an HTML body.
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.code, 501)
+        self.assertIn("default-src 'self'",
+                      ctx.exception.headers["Content-Security-Policy"])
+        payload = json.loads(ctx.exception.read())
+        self.assertIn("error", payload)
+
+    def test_error_response_carries_connection_close(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(ctx.exception.headers["Connection"], "close")
+
+    def test_head_request_sends_headers_but_no_body(self):
+        # http.client and urllib both hide a missing HEAD-body guard --
+        # their HEAD-aware readers stop at the headers regardless of what
+        # is actually on the wire. A raw socket is the only way to see it.
+        with socket.create_connection(
+                ("127.0.0.1", self.port), timeout=5) as sock:
+            sock.settimeout(2)
+            sock.sendall(b"HEAD /api/now HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            chunks = []
+            try:
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            except socket.timeout:
+                pass
+        raw = b"".join(chunks)
+        headers, _, body = raw.partition(b"\r\n\r\n")
+        self.assertIn(b"Content-Length", headers)
+        self.assertEqual(body, b"")
 
 
 if __name__ == "__main__":
@@ -3097,6 +3344,15 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 
+# Status codes the base class can raise itself (an unsupported HTTP verb, a
+# malformed request line) before our own routing ever runs. Mapped to a
+# machine-readable code so those responses stay code-shaped like every other
+# error body, instead of falling back to the base class's HTML page.
+FALLBACK_ERROR_CODES = {
+    400: "bad_request",
+    501: "not_implemented",
+}
+
 
 def is_loopback(addr: str) -> bool:
     try:
@@ -3129,25 +3385,62 @@ def make_server(cfg: Config, scheduler,
             pass
 
         # --- helpers ----------------------------------------------
-        def _send(self, code: int, body: bytes, content_type: str):
+        def _send(self, code: int, body: bytes, content_type: str,
+                  extra_headers: dict[str, str] | None = None):
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             for name, value in SECURITY_HEADERS.items():
                 self.send_header(name, value)
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(body)
+            # RFC 9110 SS9.3.2: a HEAD response carries the header fields
+            # the equivalent GET would have returned -- Content-Length
+            # included -- but never a body, so only the write is skipped.
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
-        def _json(self, code: int, payload: dict):
+        def _json(self, code: int, payload: dict,
+                  extra_headers: dict[str, str] | None = None):
             self._send(code, json.dumps(payload).encode("utf-8"),
-                       "application/json; charset=utf-8")
+                       "application/json; charset=utf-8", extra_headers)
 
-        def _error(self, code: int, error: str, detail: str = ""):
+        def _error(self, code: int, error: str, detail: str = "",
+                   extra_headers: dict[str, str] | None = None):
             # Machine-readable codes, never user-facing prose: the browser
             # localises from its catalogue.
-            self._json(code, {"error": error, "detail": detail})
+            self._json(code, {"error": error, "detail": detail}, extra_headers)
+
+        def send_error(self, code, message=None, explain=None):
+            # The base class calls this directly for errors it detects
+            # itself (an unsupported HTTP verb, a malformed request line)
+            # before our own do_GET ever runs. Without this override those
+            # responses would carry the base class's HTML body and none of
+            # our security headers -- "security headers on every response"
+            # would not hold.
+            #
+            # Connection: close is sent only here, not from _send: the
+            # base class's own send_error always sends it, and
+            # send_header('Connection', 'close') has the side effect of
+            # forcing close_connection = True -- a safety net for the
+            # narrow cases where parse_request() left close_connection
+            # False before an error fired (an overlong HTTP/1.1 request
+            # line, or an HTTP/2.0 request line). A normal 200 response
+            # must not carry this, so it stays out of _send.
+            self._error(code, FALLBACK_ERROR_CODES.get(code, "http_error"),
+                       "", {"Connection": "close"})
 
         def _authorised(self, query) -> bool:
+            # Preferred: the X-Health-Token header. Fallback: ?k=<token>,
+            # which exists only so a phone opening a shared or bookmarked
+            # link can authenticate -- plain navigation has no way to set a
+            # header. This is a deliberate trade-off: log_message() above
+            # keeps the token out of this process's own access log, and
+            # Referrer-Policy: no-referrer keeps it out of cross-navigation
+            # Referer headers, but neither reaches browser history,
+            # bookmarks, or an intermediary's own logs (LAN router, proxy,
+            # connection tracking).
             presented = (self.headers.get("X-Health-Token")
                          or query.get("k", [None])[0])
             return authorise(self.client_address[0], presented, cfg)
@@ -3156,7 +3449,7 @@ def make_server(cfg: Config, scheduler,
             target = (web_dir / relative).resolve()
             try:
                 target.relative_to(web_dir.resolve())
-            except ValueError:
+            except (ValueError, OSError):
                 return self._error(403, "path_refused", relative)
             if not target.is_file():
                 return self._error(404, "file_not_found", relative)
@@ -3170,8 +3463,7 @@ def make_server(cfg: Config, scheduler,
             query = parse_qs(parsed.query)
 
             if not self._authorised(query):
-                return self._error(401, "token_required",
-                                   "non-loopback access requires a token")
+                return self._error(401, "token_required", "")
 
             if parsed.path == "/":
                 return self._serve_file("index.html")
@@ -3239,6 +3531,7 @@ File `tests/test_stream.py`:
 ```python
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -3259,8 +3552,15 @@ class HttpCase(unittest.TestCase):
         cls.store = Store(":memory:")
         cls.scheduler = Scheduler(Config(), cls.store, Ring())
         cls.scheduler.tick(now=1000.0)
-        cls.store.write_metrics(1000, [("cpu.usage", 20.0, 10.0, 30.0)])
-        cls.store.write_metrics(2000, [("cpu.usage", 40.0, 30.0, 50.0)])
+        # Recent, in-window instants against the real clock: the history
+        # route filters with `time.time()`, so fixture rows must sit inside
+        # the windows the tests actually request, not near the Unix epoch.
+        cls.now = int(time.time())
+        cls.store.write_metrics(cls.now - 3600, [("cpu.usage", 20.0, 10.0, 30.0)])
+        cls.store.write_metrics(cls.now - 1800, [("cpu.usage", 40.0, 30.0, 50.0)])
+        # Fold the raw rows into the 5-minute aggregate table too, so a
+        # long-range request (which reads metric_5m) has data to find.
+        cls.store.aggregate_5m(cls.now)
         cls.server = make_server(Config(bind="127.0.0.1", port=0),
                                  cls.scheduler, WEB_DIR)
         cls.port = cls.server.server_address[1]
@@ -3277,11 +3577,24 @@ class HttpCase(unittest.TestCase):
 
 
 class TestHistory(HttpCase):
-    def test_known_range_returns_points(self):
+    def test_recent_range_returns_points_from_the_raw_table(self):
+        # 24h is at or under RAW_TABLE_MAX_SECONDS, so it reads the raw
+        # `metric` table the fixture writes to directly.
+        body = json.loads(urllib.request.urlopen(
+            self.url("/api/history?metric=cpu.usage&range=24h"),
+            timeout=5).read())
+        self.assertEqual(body["metric"], "cpu.usage")
+        self.assertEqual(body["table"], "metric")
+        self.assertGreaterEqual(len(body["points"]), 1)
+
+    def test_long_range_returns_points_from_the_aggregate_table(self):
+        # 90d exceeds RAW_TABLE_MAX_SECONDS, so it reads the `metric_5m`
+        # aggregate table, which the fixture folds the raw rows into.
         body = json.loads(urllib.request.urlopen(
             self.url("/api/history?metric=cpu.usage&range=90d"),
             timeout=5).read())
         self.assertEqual(body["metric"], "cpu.usage")
+        self.assertEqual(body["table"], "metric_5m")
         self.assertGreaterEqual(len(body["points"]), 1)
 
     def test_unknown_range_is_refused(self):
@@ -3488,6 +3801,7 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.title",
     "ui.mode.simple",
     "ui.mode.expert",
+    "ui.mode.group",
     "ui.language",
     "ui.score.label",
     "ui.freshness.live",
@@ -3614,6 +3928,7 @@ Expected: FAIL — `FileNotFoundError: web/i18n/en.json`
   "ui.title": "Health Console",
   "ui.mode.simple": "Simple",
   "ui.mode.expert": "Expert",
+  "ui.mode.group": "Detail level",
   "ui.language": "Language",
   "ui.score.label": "Overall health",
   "ui.freshness.live": "Up to date · last reading at {time}",
@@ -3662,6 +3977,7 @@ Expected: FAIL — `FileNotFoundError: web/i18n/en.json`
   "ui.title": "Console de santé",
   "ui.mode.simple": "Simple",
   "ui.mode.expert": "Expert",
+  "ui.mode.group": "Niveau de détail",
   "ui.language": "Langue",
   "ui.score.label": "Santé globale",
   "ui.freshness.live": "À jour · dernière mesure à {time}",
@@ -3796,6 +4112,25 @@ class TestIndex(unittest.TestCase):
         self.assertIn('href="/static/style.css"', self.html)
         self.assertIn('src="/static/app.js"', self.html)
 
+    def test_no_hard_coded_aria_label(self):
+        # An aria-label baked into the markup is a user-facing string that
+        # cannot be translated: it must instead be set from the catalogue
+        # at render time, like every other text node.
+        match = re.search(r'aria-label="[^"]+"', self.html)
+        self.assertIsNone(
+            match, f"index.html hard-codes {match and match.group(0)}")
+
+    def test_tabs_are_associated_with_their_panels(self):
+        # role="tab" inside role="tablist" is not enough on its own: a
+        # screen reader needs aria-controls/aria-labelledby to link each
+        # tab to the panel it toggles. The association is bidirectional
+        # or it is not an association: both directions are asserted.
+        self.assertIn('aria-controls="simple"', self.html)
+        self.assertIn('aria-controls="expert"', self.html)
+        self.assertIn('aria-labelledby="mode-simple"', self.html)
+        self.assertIn('aria-labelledby="mode-expert"', self.html)
+        self.assertEqual(self.html.count('role="tabpanel"'), 2)
+
 
 class TestStyle(unittest.TestCase):
     def setUp(self):
@@ -3851,6 +4186,26 @@ class TestApp(unittest.TestCase):
     def test_missing_key_falls_back_rather_than_showing_the_key(self):
         self.assertIn("FALLBACK_LOCALE", self.js)
 
+    def test_freshness_stale_flag_is_not_hardcoded(self):
+        # The original defect was markFreshness(state.ts * 1000, false) — a
+        # literal false that a locale switch mid-outage silently repainted
+        # as "up to date". Guard against regressing to any hardcoded
+        # boolean argument.
+        self.assertIn("let isStale", self.js)
+        self.assertNotRegex(
+            self.js, r"markFreshness\([^)]*\bfalse\b[^)]*\)",
+            "markFreshness is called with a hardcoded false")
+        self.assertIn("isStale = true", self.js)
+        self.assertIn("isStale = false", self.js)
+
+    def test_catalogue_fetch_is_defensive(self):
+        # A missing or broken catalogue file must not silently blank the
+        # page: the fetch is checked for failure and guarded by a try.
+        self.assertIn("response.ok", self.js)
+        self.assertRegex(
+            self.js, r"try\s*\{[^}]*loadCatalogue\(",
+            "loadCatalogue is not called inside a try block")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -3879,9 +4234,9 @@ render time, so no English wording is baked into the markup.
   <header class="bar">
     <h1 id="app-title"></h1>
     <div class="controls">
-      <div class="modes" role="tablist" aria-label="Detail level">
-        <button id="mode-simple" role="tab" aria-selected="true"></button>
-        <button id="mode-expert" role="tab" aria-selected="false"></button>
+      <div class="modes" id="mode-group" role="tablist">
+        <button id="mode-simple" role="tab" aria-selected="true" aria-controls="simple"></button>
+        <button id="mode-expert" role="tab" aria-selected="false" aria-controls="expert"></button>
       </div>
       <label class="locale-field">
         <span id="locale-label"></span>
@@ -3895,7 +4250,7 @@ render time, so no English wording is baked into the markup.
 
   <p id="freshness" class="freshness" aria-live="polite"></p>
 
-  <main id="simple" class="view">
+  <main id="simple" class="view" role="tabpanel" aria-labelledby="mode-simple">
     <section class="verdict" aria-live="polite">
       <p class="verdict-state">
         <span id="verdict-icon" aria-hidden="true"></span>
@@ -3910,7 +4265,7 @@ render time, so no English wording is baked into the markup.
     <div id="findings"></div>
   </main>
 
-  <main id="expert" class="view" hidden>
+  <main id="expert" class="view" role="tabpanel" aria-labelledby="mode-expert" hidden>
     <p id="expert-placeholder"></p>
     <pre id="raw"></pre>
   </main>
@@ -4034,6 +4389,8 @@ let timeFormat = new Intl.DateTimeFormat(locale,
   { hour: "2-digit", minute: "2-digit" });
 let lastState = null;
 let lastUpdate = Date.now();
+let isStale = false;
+let interfaceTextUnavailable = false;
 
 function el(id) { return document.getElementById(id); }
 
@@ -4077,12 +4434,29 @@ export function formatBytes(bytes) {
 
 async function loadCatalogue(target) {
   const response = await fetch(`/static/i18n/${target}.json`);
+  if (!response.ok) {
+    throw new Error(`catalogue unavailable: ${target} (${response.status})`);
+  }
   return response.json();
 }
 
 export async function setLocale(target) {
-  locale = AVAILABLE_LOCALES.includes(target) ? target : FALLBACK_LOCALE;
-  catalogue = await loadCatalogue(locale);
+  const requested = AVAILABLE_LOCALES.includes(target) ? target : FALLBACK_LOCALE;
+  if (requested === FALLBACK_LOCALE) {
+    catalogue = fallback;
+    locale = FALLBACK_LOCALE;
+  } else {
+    try {
+      catalogue = await loadCatalogue(requested);
+      locale = requested;
+    } catch (error) {
+      // A broken non-default catalogue must not take the page down: fall
+      // back to the already-loaded English catalogue instead of aborting.
+      console.warn(`falling back to ${FALLBACK_LOCALE} after ${requested} failed to load`, error);
+      catalogue = fallback;
+      locale = FALLBACK_LOCALE;
+    }
+  }
   numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
   timeFormat = new Intl.DateTimeFormat(locale,
     { hour: "2-digit", minute: "2-digit" });
@@ -4098,6 +4472,7 @@ function paintChrome() {
   el("app-title").textContent = translate("ui.title");
   el("mode-simple").textContent = translate("ui.mode.simple");
   el("mode-expert").textContent = translate("ui.mode.expert");
+  el("mode-group").setAttribute("aria-label", translate("ui.mode.group"));
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
   el("expert-placeholder").textContent = translate("ui.expert.placeholder");
@@ -4137,19 +4512,32 @@ export function render(state) {
   }
 
   // An unavailable probe is shown as unavailable, never as a reassuring zero.
+  // A probe whose evaluate() raised keeps status "ok" (the reading itself
+  // succeeded) but carries eval_error, and that must not stay invisible.
   for (const [name, probe] of Object.entries(state.probes || {})) {
-    if (probe.status === "ok") continue;
+    if (probe.status === "ok" && !probe.eval_error) continue;
     host.append(card("INFO",
       translate("ui.probe.unavailable", { probe: name }),
-      probe.reason || ""));
+      probe.reason || probe.eval_error || ""));
   }
 
   el("raw").textContent = JSON.stringify(state, null, 2);
-  markFreshness(state.ts * 1000, false);
+  markFreshness(isStale);
 }
 
-function markFreshness(milliseconds, stale) {
+function markFreshness(stale) {
+  // While stale, the banner must keep showing the last real update time,
+  // never the timestamp of whatever just got (re)painted — a locale
+  // switch during an outage must repaint the stale message, not erase it.
+  if (interfaceTextUnavailable) {
+    // The catalogue never loaded, so translate() has nothing to return
+    // but "". If the SSE stream still comes up despite that (a plausible
+    // split: static assets down, the API up), a state event must not
+    // silently blank out the one visible sign that something is wrong.
+    return;
+  }
   const zone = el("freshness");
+  const milliseconds = stale ? lastUpdate : lastState.ts * 1000;
   const time = timeFormat.format(new Date(milliseconds));
   zone.classList.toggle("stale", stale);
   document.body.classList.toggle("stale", stale);
@@ -4170,26 +4558,45 @@ function connect() {
   const source = new EventSource("/api/stream");
   source.addEventListener("state", (event) => {
     lastUpdate = Date.now();
+    isStale = false;
     render(JSON.parse(event.data));
   });
-  source.addEventListener("error", () => markFreshness(lastUpdate, true));
+  source.addEventListener("error", () => {
+    isStale = true;
+    markFreshness(true);
+  });
   setInterval(() => {
-    if (Date.now() - lastUpdate > STALE_AFTER_MS) markFreshness(lastUpdate, true);
+    if (Date.now() - lastUpdate > STALE_AFTER_MS) {
+      isStale = true;
+      markFreshness(true);
+    }
   }, 5000);
 }
 
 async function start() {
-  fallback = await loadCatalogue(FALLBACK_LOCALE);
   el("mode-simple").addEventListener("click", () => switchMode("simple"));
   el("mode-expert").addEventListener("click", () => switchMode("expert"));
   el("locale").addEventListener("change", (event) =>
     setLocale(event.target.value));
   switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
-  await setLocale(pickLocale());
   try {
-    render(await (await fetch("/api/now")).json());
+    fallback = await loadCatalogue(FALLBACK_LOCALE);
+    await setLocale(pickLocale());
+    try {
+      render(await (await fetch("/api/now")).json());
+    } catch (error) {
+      console.warn("initial state unavailable", error);
+    }
   } catch (error) {
-    console.warn("initial state unavailable", error);
+    // The catalogue itself is what failed here, so there is nothing left
+    // to translate this sentence with: every other text node in
+    // index.html starts empty, and without this literal sentence the
+    // viewer would see a blank page with no sign anything is wrong. Do
+    // not "fix" this back to a translate() call.
+    console.warn("catalogue unavailable, interface text cannot be shown", error);
+    interfaceTextUnavailable = true;
+    el("freshness").textContent =
+      "Interface text failed to load. Please reload the page.";
   }
   connect();
 }
@@ -4233,7 +4640,7 @@ probe is shown as such rather than as a reassuring zero."
 
 **Interfaces:**
 - Consumes: everything above
-- Produces: `main(argv: list[str] | None = None) -> int`, `cmd_run(cfg) -> int`, `cmd_config(cfg) -> int`, `cmd_status(cfg) -> int`, `cmd_prune(cfg) -> int`, `default_db_path() -> Path`, `human_bytes(n: float) -> str`
+- Produces: `main(argv: list[str] | None = None) -> int`, `cmd_run(cfg) -> int`, `cmd_config(cfg, config_path: Path) -> int`, `cmd_status(cfg) -> int`, `cmd_prune(cfg) -> int`, `default_db_path() -> Path`, `human_bytes(n: float) -> str`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4241,10 +4648,13 @@ File `tests/test_cli.py`:
 
 ```python
 import io
+import os
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 
-from healthconsole.cli import human_bytes, main
+from healthconsole.cli import SECONDS_PER_DAY, _tick_once, human_bytes, main
 
 
 class TestHumanBytes(unittest.TestCase):
@@ -4281,6 +4691,110 @@ class TestCommands(unittest.TestCase):
     def test_unknown_command_is_refused(self):
         code, _ = self.run_cli("teleport")
         self.assertEqual(code, 2)
+
+    def test_config_announces_the_file_it_actually_read(self):
+        # The command must never claim to have read the default path when
+        # --config pointed it somewhere else.
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".toml", delete=False) as handle:
+            handle.write('[server]\nport = 9999\n')
+            path = handle.name
+        try:
+            code, output = self.run_cli("--config", path, "config")
+        finally:
+            os.unlink(path)
+        self.assertEqual(code, 0)
+        self.assertIn(path, output)
+        self.assertIn("9999", output)
+
+    def test_help_exits_zero(self):
+        code, output = self.run_cli("--help")
+        self.assertEqual(code, 0)
+        self.assertIn("usage", output.lower())
+
+
+class _FakeScheduler:
+    """A scheduler stand-in that records calls and can be told to raise.
+
+    Used only to exercise `_tick_once`'s error handling without starting a
+    real server or touching a real database.
+    """
+
+    def __init__(self, raise_on=()):
+        self.raise_on = set(raise_on)
+        self.calls = []
+
+    def tick(self, now):
+        self.calls.append(("tick", now))
+        if "tick" in self.raise_on:
+            raise RuntimeError("tick failed")
+
+    def flush(self, now):
+        self.calls.append(("flush", now))
+        if "flush" in self.raise_on:
+            raise RuntimeError("flush failed")
+
+    def maintain(self, now):
+        self.calls.append(("maintain", now))
+        if "maintain" in self.raise_on:
+            raise RuntimeError("maintain failed")
+
+
+def _fake_cfg(store_seconds=30):
+    return SimpleNamespace(sampling=SimpleNamespace(store_seconds=store_seconds))
+
+
+class TestTickOnce(unittest.TestCase):
+    """`_tick_once` is the per-iteration body of `cmd_run`'s background
+    loop, extracted so the collection loop's resilience to a raising probe,
+    store or scheduler call can be tested without starting a real server.
+    """
+
+    def test_a_raising_tick_does_not_propagate(self):
+        scheduler = _FakeScheduler(raise_on={"tick"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _tick_once(scheduler, _fake_cfg(), last_flush=0,
+                       last_maintain=0, now=100)
+        self.assertIn("RuntimeError", err.getvalue())
+
+    def test_a_raising_flush_does_not_propagate(self):
+        # A disk-full error surfacing from write_metrics is the realistic
+        # case that motivated this: it must not kill the collection loop.
+        scheduler = _FakeScheduler(raise_on={"flush"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _tick_once(scheduler, _fake_cfg(store_seconds=30), last_flush=0,
+                       last_maintain=0, now=100)
+        self.assertIn("RuntimeError", err.getvalue())
+
+    def test_the_normal_path_advances_the_bookkeeping(self):
+        scheduler = _FakeScheduler()
+        last_flush, _ = _tick_once(
+            scheduler, _fake_cfg(store_seconds=30),
+            last_flush=0, last_maintain=0, now=100)
+        self.assertIn(("flush", 100), scheduler.calls)
+        self.assertEqual(last_flush, 100)
+
+        scheduler = _FakeScheduler()
+        _, last_maintain = _tick_once(
+            scheduler, _fake_cfg(store_seconds=30),
+            last_flush=0, last_maintain=0, now=SECONDS_PER_DAY + 1)
+        self.assertIn(("maintain", SECONDS_PER_DAY + 1), scheduler.calls)
+        self.assertEqual(last_maintain, SECONDS_PER_DAY + 1)
+
+    def test_a_raising_tick_leaves_bookkeeping_unchanged(self):
+        # A failure must not silently skip a flush window: if tick() blew
+        # up, last_flush/last_maintain should come back exactly as given.
+        scheduler = _FakeScheduler(raise_on={"tick"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            last_flush, last_maintain = _tick_once(
+                scheduler, _fake_cfg(store_seconds=30),
+                last_flush=0, last_maintain=0, now=100)
+        self.assertEqual(last_flush, 0)
+        self.assertEqual(last_maintain, 0)
+        self.assertNotIn(("flush", 100), scheduler.calls)
 
 
 if __name__ == "__main__":
@@ -4385,9 +4899,9 @@ def _open(cfg):
     return store, Scheduler(cfg, store, ring)
 
 
-def cmd_config(cfg) -> int:
+def cmd_config(cfg, config_path: Path) -> int:
     retention, sampling = cfg.retention, cfg.sampling
-    print(f"Config file      : {DEFAULT_CONFIG_PATH}")
+    print(f"Config file      : {config_path}")
     print(f"Listening on     : {cfg.bind}:{cfg.port}")
     print(f"Token            : {'set' if cfg.token else 'absent'}")
     print("Retention (days)")
@@ -4407,7 +4921,9 @@ def cmd_config(cfg) -> int:
 
 
 def cmd_status(cfg) -> int:
-    store, _ = _open(cfg)
+    # No Ring/Scheduler needed here: status only reads the store, so open
+    # it directly rather than paying for a Scheduler (which loads probes).
+    store = Store(default_db_path())
     try:
         now = int(time.time())
         print(f"Database         : {store.path}")
@@ -4436,25 +4952,65 @@ def cmd_prune(cfg) -> int:
     return 0
 
 
+def _log_loop_error(exc: Exception) -> None:
+    print(f"scheduler loop error: {type(exc).__name__}: {exc}",
+          file=sys.stderr)
+
+
+def _tick_once(scheduler, cfg, last_flush, last_maintain, now=None):
+    """One iteration of the background collection loop.
+
+    Kept as a separate, importable function — rather than inlined in the
+    closure below — so the loop's resilience to a raising probe, store or
+    scheduler call can be exercised by a test without starting a real
+    server or thread. This console's whole premise is that it does not
+    quietly stop telling the truth, so that resilience is worth covering
+    directly rather than only by reading the diff.
+    """
+    now = time.time() if now is None else now
+    try:
+        scheduler.tick(now)
+        if now - last_flush >= cfg.sampling.store_seconds:
+            scheduler.flush(now)
+            last_flush = now
+        if now - last_maintain >= SECONDS_PER_DAY:
+            scheduler.maintain(now)
+            last_maintain = now
+    except Exception as exc:                  # noqa: BLE001
+        # A transient disk or database error must not permanently stop
+        # collection: log it and keep looping so the console recovers
+        # once the condition clears, instead of leaving the server
+        # answering with a state frozen at the last successful tick
+        # forever.
+        _log_loop_error(exc)
+    return last_flush, last_maintain
+
+
 def cmd_run(cfg) -> int:
     store, scheduler = _open(cfg)
     server = make_server(cfg, scheduler, WEB_DIR)
+    stop = threading.Event()
 
     def loop():
+        # Enforce retention once at startup, before entering the periodic
+        # loop below. A machine that restarts daily (suspends, reboots, or
+        # has its service restarted nightly) may never keep this thread
+        # alive for the full 86400 seconds the periodic check waits for, so
+        # without this call `store.prune()` could simply never run and the
+        # database would grow unbounded.
+        try:
+            scheduler.maintain()
+        except Exception as exc:                  # noqa: BLE001
+            _log_loop_error(exc)
         last_flush = time.time()
         last_maintain = time.time()
-        while True:
-            now = time.time()
-            scheduler.tick(now)
-            if now - last_flush >= cfg.sampling.store_seconds:
-                scheduler.flush(now)
-                last_flush = now
-            if now - last_maintain >= SECONDS_PER_DAY:
-                scheduler.maintain(now)
-                last_maintain = now
-            time.sleep(cfg.sampling.live_seconds)
+        while not stop.is_set():
+            last_flush, last_maintain = _tick_once(
+                scheduler, cfg, last_flush, last_maintain)
+            stop.wait(cfg.sampling.live_seconds)
 
-    threading.Thread(target=loop, daemon=True).start()
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
     print(f"Health Console on http://{cfg.bind}:{cfg.port}")
     print("Ctrl+C to stop.")
     try:
@@ -4462,7 +5018,9 @@ def cmd_run(cfg) -> int:
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
+        stop.set()
         server.server_close()
+        thread.join(timeout=5)
         store.close()
     return 0
 
@@ -4480,17 +5038,23 @@ def main(argv: list[str] | None = None) -> int:
                         help="path to a configuration file")
     try:
         args = parser.parse_args(argv)
-    except SystemExit:
-        parser.print_usage()
-        return 2
+    except SystemExit as exc:
+        # -h/--help exits 0 after printing the full help to stdout; an
+        # invalid argument exits 2 after argparse has already printed usage
+        # and the error to stderr. Either way argparse already wrote
+        # everything needed, so do not print a second, duplicate usage line.
+        return exc.code if exc.code else 0
     if args.command is None:
         parser.print_usage()
         return 2
+    config_path = DEFAULT_CONFIG_PATH if args.config is None else args.config
     try:
         cfg = load_config(args.config)
     except ConfigError as exc:
         print(f"Invalid configuration: {exc}", file=sys.stderr)
         return 1
+    if args.command == "config":
+        return cmd_config(cfg, config_path)
     return COMMANDS[args.command](cfg)
 ```
 

@@ -1,0 +1,48 @@
+{
+  "ui.title": "Health Console",
+  "ui.mode.simple": "Simple",
+  "ui.mode.expert": "Expert",
+  "ui.mode.group": "Detail level",
+  "ui.language": "Language",
+  "ui.score.label": "Overall health",
+  "ui.freshness.live": "Up to date · last reading at {time}",
+  "ui.freshness.stale": "Data frozen since {time} · reconnecting…",
+  "ui.probe.unavailable": "Measurement unavailable: {probe}",
+  "ui.probe.unavailable.why": "This measurement could not be taken right now.",
+  "ui.probe.unavailable.raw_prefix": "Technical detail:",
+  "ui.expert.placeholder": "Expert mode arrives in plan 2.",
+  "ui.state.no_measurement": "No measurement yet",
+  "ui.state.no_measurement.detail": "The console has not completed its first measurement yet. This should only take a few seconds.",
+
+  "severity.OK.word": "All good",
+  "severity.OK.icon": "●",
+  "severity.INFO.word": "Information",
+  "severity.INFO.icon": "ℹ",
+  "severity.ATTENTION.word": "Attention",
+  "severity.ATTENTION.icon": "⚠",
+  "severity.URGENT.word": "Urgent",
+  "severity.URGENT.icon": "✖",
+
+  "verdict.OK": "Your computer is in good shape.",
+  "verdict.INFO": "Everything works, with one thing worth knowing.",
+  "verdict.ATTENTION": "Something deserves your attention.",
+  "verdict.URGENT": "Action is needed soon.",
+
+  "finding.cpu.usage_high.title": "Your computer has been working hard for {sustain_minutes} minutes",
+  "finding.cpu.usage_high.why": "It has been using {usage_pct} % of its processing power for a while now. That is normal during heavy work, but if it lasts for no reason the computer may heat up and slow down.",
+
+  "finding.memory.pressure.title": "Memory is nearly full: only {available_bytes} left ({available_pct} % free)",
+  "finding.memory.pressure.why": "The computer has started moving data to the disk ({swap_used_bytes} so far), which is far slower than memory. Closing a few applications should make it responsive again.",
+
+  "finding.thermal.high.title": "Your computer has been running hot for a while ({temperature_c} °C)",
+  "finding.thermal.high.why": "The heat has lasted several minutes. If this happens often, the fan is probably clogged with dust: cleaning it extends the life of the machine.",
+
+  "finding.thermal.critical.title": "Your computer is very hot ({temperature_c} °C)",
+  "finding.thermal.critical.why": "At this temperature the machine throttles itself to avoid damage and may shut down on its own. Check that the air vents are not blocked and place the device on a hard surface.",
+
+  "finding.battery.wear.title": "The battery has lost {wear_pct} % of its original capacity",
+  "finding.battery.wear.why": "It therefore lasts less time than when new. This is normal battery ageing, but past half its capacity, replacing it becomes reasonable.",
+
+  "finding.battery.incoherent.title": "Battery readings cannot be trusted",
+  "finding.battery.incoherent.why": "This computer reports impossible battery figures, which is a known flaw in some manufacturers' firmware. Rather than show you a wrong number, we show none. The battery itself is probably fine."
+}

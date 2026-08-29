@@ -4,8 +4,9 @@ A local web console that reports the health of an Ubuntu machine through two
 deliberate readings: a **Simple mode** in plain language, understandable without a
 technical background, and an **Expert mode** that exposes everything.
 
-> **Project status: design.** The design document is complete and approved;
-> **there is no code yet**. This repository is not installable as it stands.
+> **Project status: working console.** All 15 tasks of the implementation plan
+> are complete and reviewed. It runs today from a checkout — see
+> [Running it](#running-it) below.
 
 ## The idea
 
@@ -39,7 +40,7 @@ the real alerts. Errors are grouped by pattern; only what is new or accelerating
 reported.
 
 **A health tool must not harm the machine's health.** Target budget: under 60 MB
-resident memory, under 2 % CPU on average, and a database of about 32 MB with default
+resident memory, under 2 % CPU on average, and a database of about 54 MB with default
 settings. The 2-second live view lives in memory; only one sample every 30 seconds is
 written to disk. Retention periods are set in days, and the service announces the
 database size they imply **before** it is reached.
@@ -63,6 +64,50 @@ hand-drawn SVG charts.
 Full design:
 [`docs/superpowers/specs/2026-08-29-health-console-design.md`](docs/superpowers/specs/2026-08-29-health-console-design.md)
 
+## Running it
+
+No install step: run it straight from a checkout with `psutil` available
+(`apt install python3-psutil`, or it is already present on the target Ubuntu
+release).
+
+```sh
+./bin/health-console run
+```
+
+Then open `http://127.0.0.1:8787/` (or the LAN address it prints, if `bind`
+is not loopback). `Ctrl+C` stops it.
+
+Other commands:
+
+```sh
+./bin/health-console config          # effective configuration and projected database size
+./bin/health-console status          # database location, size, and how much history it holds
+./bin/health-console prune           # apply the configured retention immediately
+./bin/health-console token           # show the configured token, if any
+./bin/health-console token --rotate  # generate one and store it in config.toml
+```
+
+Configuration lives at `~/.config/health-console/config.toml` (created on
+first use of a command that needs one; absent otherwise, in which case every
+setting below takes its default). Example:
+
+```toml
+[server]
+bind  = "127.0.0.1"   # "0.0.0.0" or "::" to also listen on the LAN
+port  = 8787
+token = ""            # required for any non-loopback request; see Security notes
+
+[retention]
+raw_days       = 2    # fine-grained samples (30 s step)
+aggregate_days = 90   # 5-minute averages — this is what carries the trends
+snapshot_days  = 7
+event_days     = 365
+audit_days     = 365
+```
+
+The database lives at `~/.local/share/health-console/db.sqlite3` (WAL mode;
+`-wal`/`-shm` files sit alongside it while the service runs).
+
 ## Security notes
 
 This project targets **a personal machine on a trusted network**. Read this before
@@ -77,6 +122,10 @@ deploying it anywhere else.
 - **It listens on the local network**, protected by a token. Actions are **refused
   outside `127.0.0.1`** unless explicitly enabled in configuration: reading and acting
   do not carry the same cost when you get it wrong.
+- **The token can also be passed as `?k=` in the URL**, so a phone can open a
+  bookmarked or shared link. That is a deliberate trade-off: unlike the header path,
+  it persists in browser history and in any intermediary's logs (LAN router, proxy,
+  connection tracking).
 - **It is not designed to face the Internet.** Do not put it there.
 - Every action is logged with its timestamp, source, exit code and full output.
 

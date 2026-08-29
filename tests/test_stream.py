@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -20,8 +21,15 @@ class HttpCase(unittest.TestCase):
         cls.store = Store(":memory:")
         cls.scheduler = Scheduler(Config(), cls.store, Ring())
         cls.scheduler.tick(now=1000.0)
-        cls.store.write_metrics(1000, [("cpu.usage", 20.0, 10.0, 30.0)])
-        cls.store.write_metrics(2000, [("cpu.usage", 40.0, 30.0, 50.0)])
+        # Recent, in-window instants against the real clock: the history
+        # route filters with `time.time()`, so fixture rows must sit inside
+        # the windows the tests actually request, not near the Unix epoch.
+        cls.now = int(time.time())
+        cls.store.write_metrics(cls.now - 3600, [("cpu.usage", 20.0, 10.0, 30.0)])
+        cls.store.write_metrics(cls.now - 1800, [("cpu.usage", 40.0, 30.0, 50.0)])
+        # Fold the raw rows into the 5-minute aggregate table too, so a
+        # long-range request (which reads metric_5m) has data to find.
+        cls.store.aggregate_5m(cls.now)
         cls.server = make_server(Config(bind="127.0.0.1", port=0),
                                  cls.scheduler, WEB_DIR)
         cls.port = cls.server.server_address[1]
@@ -38,11 +46,24 @@ class HttpCase(unittest.TestCase):
 
 
 class TestHistory(HttpCase):
-    def test_known_range_returns_points(self):
+    def test_recent_range_returns_points_from_the_raw_table(self):
+        # 24h is at or under RAW_TABLE_MAX_SECONDS, so it reads the raw
+        # `metric` table the fixture writes to directly.
+        body = json.loads(urllib.request.urlopen(
+            self.url("/api/history?metric=cpu.usage&range=24h"),
+            timeout=5).read())
+        self.assertEqual(body["metric"], "cpu.usage")
+        self.assertEqual(body["table"], "metric")
+        self.assertGreaterEqual(len(body["points"]), 1)
+
+    def test_long_range_returns_points_from_the_aggregate_table(self):
+        # 90d exceeds RAW_TABLE_MAX_SECONDS, so it reads the `metric_5m`
+        # aggregate table, which the fixture folds the raw rows into.
         body = json.loads(urllib.request.urlopen(
             self.url("/api/history?metric=cpu.usage&range=90d"),
             timeout=5).read())
         self.assertEqual(body["metric"], "cpu.usage")
+        self.assertEqual(body["table"], "metric_5m")
         self.assertGreaterEqual(len(body["points"]), 1)
 
     def test_unknown_range_is_refused(self):

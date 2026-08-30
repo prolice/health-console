@@ -21,6 +21,13 @@ export function summarise(points) {
     .map(([, value]) => value)
     .filter((value) => typeof value === "number" && Number.isFinite(value));
   if (values.length === 0) return null;
+  // current is the most recent *finite* sample, not necessarily the sample
+  // from the newest bucket: a trailing null (a collector hiccup, or simply
+  // the freshest bucket not yet populated) is skipped rather than reported
+  // as a live reading. That is why the catalogue wording for ui.chart.summary
+  // says "last recorded {current}" rather than "currently {current}" -- the
+  // value may be stale by up to one sampling gap, and the sentence must not
+  // claim otherwise.
   return {
     min: Math.min(...values),
     max: Math.max(...values),
@@ -74,7 +81,6 @@ function baseOptions(points) {
     maintainAspectRatio: false,
     animation: animationsAllowed() && { duration: 200 },
     parsing: false,
-    normalized: true,
     plugins: {
       legend: { display: false },
       decimation: {
@@ -95,6 +101,11 @@ function formatTick(unixSeconds, range) {
     ? formatTime(when) : formatDate(when);
 }
 
+// normalized is a per-dataset flag, not a chart-options one -- Chart.js
+// never reads options.normalized. Callers (Task 9) must set it on each
+// dataset object they pass in, e.g. { data, normalized: true, ... }. It is
+// sound here because the server returns points already ascending by
+// timestamp, which is exactly the precondition normalized: true promises.
 export function drawLine(canvas, { datasets, range, points }) {
   if (!chartsAvailable()) return null;
   const options = baseOptions(points);
@@ -122,6 +133,7 @@ export function drawSparkline(canvas, points, colour) {
   return register(new globalThis.Chart(canvas, {
     type: "line",
     data: { datasets: [{ data: points.map(([x, y]) => ({ x, y })),
+                         normalized: true,
                          borderColor: colour, borderWidth: 2,
                          fill: false, tension: 0.3 }] },
     options,

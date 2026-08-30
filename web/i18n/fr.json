@@ -42,8 +42,8 @@
   "ui.chart.empty": "Rien d'enregistré sur cette fenêtre pour l'instant.",
   "ui.chart.depth": "Historique disponible : {days} jours.",
   "ui.chart.depth_short": "Seulement {days} jours d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
-  "ui.chart.summary": "{metric} sur {range} : minimum {min}, maximum {max}, actuellement {current}.",
-  "ui.chart.unavailable": "Les graphiques sont indisponibles : la librairie de tracé ne s'est pas chargée. Toutes les valeurs ci-dessus restent à jour.",
+  "ui.chart.summary": "{metric} sur {range} : minimum {min}, maximum {max}, dernière valeur relevée {current}.",
+  "ui.chart.unavailable": "Les graphiques sont indisponibles : la bibliothèque de tracé ne s'est pas chargée. Toutes les valeurs ci-dessus restent à jour.",
 
   "ui.expert.overview": "Valeurs actuelles",
   "ui.expert.probes": "Sondes",

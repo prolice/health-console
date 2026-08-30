@@ -42,7 +42,7 @@
   "ui.chart.empty": "Nothing recorded over this window yet.",
   "ui.chart.depth": "History available: {days} days.",
   "ui.chart.depth_short": "Only {days} days of history so far. Collection began recently — this is not a fault.",
-  "ui.chart.summary": "{metric} over {range}: minimum {min}, maximum {max}, currently {current}.",
+  "ui.chart.summary": "{metric} over {range}: minimum {min}, maximum {max}, last recorded {current}.",
   "ui.chart.unavailable": "Charts are unavailable: the drawing library did not load. Every reading above is still current.",
 
   "ui.expert.overview": "Current readings",

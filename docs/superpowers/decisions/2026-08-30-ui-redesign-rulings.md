@@ -73,3 +73,22 @@ decision was wrong, so it can be reviewed and reversed.
 - decimation is keyed to drawable[0] only, so a card whose second series is far longer will not decimate. Pre-existing.
 - the implementer report arithmetic has two small errors (vendored total 521078 vs actual 520995; 55.9 KiB vs actual 54.6 KiB). Confined to the report, never reached README or the design document.
 - Ruling R48: the budget-raise agent also edited an example code block inside docs/superpowers/plans/2026-08-29-health-console-foundation.md, a completed plan. Reverted in 4a53429. A plan records what was planned at the time; the 60 KiB check on app.js was true when it was written. A plan cannot be superseded, only carried out -- the same argument that made us EXTEND section 10.5 rather than overwrite it applies more strongly here. Cost if wrong: none, the file is documentation of a finished cycle.
+
+## Corrections found by the first human to see the page rendered
+
+Nothing on this branch was ever seen in a browser during development — no browser
+tool was available. The first two defects a person found in two looks:
+
+- **The verdict gauge rendered 700 px tall.** `responsive: true` makes Chart.js
+  size a canvas from its parent, and the inline height it writes beats a
+  stylesheet's `height: auto`. Fixed with a bounded `.gauge-holder`, matching the
+  `.chart-holder` pattern already in the stylesheet.
+- **Bootstrap's `data:image/svg+xml` icons were blocked by the CSP.** §4.2 of the
+  redesign spec is titled "No CSP relaxation" and reached that conclusion by
+  checking inline *styles*; it never considered inline *images*. The accordion
+  chevron and the select arrow did not render. Fixed by widening the policy to
+  `default-src 'self'; img-src 'self' data:` — images only, no script source
+  widened, no external origin added.
+
+A third console error, an inline script blocked under `script-src-elem`, came from
+a browser extension and is the policy working as intended. No change made.

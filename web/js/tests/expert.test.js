@@ -1,7 +1,45 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { chartCards, isDepthShort, TILES } from "../expert.js";
+import { chartCards, isDepthShort, depthMessage, renderProbeTable,
+         thermalZoneSignature, TILES } from "../expert.js";
+
+// A minimal stand-in for the DOM, just enough for renderProbeTable() (the
+// only exported function here that touches document.createElement /
+// el()) to run and be inspected. append()/textContent replicate just
+// enough real-DOM behaviour for that: a fresh element has no children,
+// append() records them in order, and setting textContent to "" (what
+// dom.js's clear() does) drops any children the way a real
+// node.textContent = "" assignment would.
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.children = [];
+    this.className = "";
+    this._text = "";
+  }
+  set textContent(value) {
+    this._text = value;
+    if (value === "") this.children = [];
+  }
+  get textContent() { return this._text; }
+  append(...nodes) { this.children.push(...nodes); }
+  setAttribute() {}
+}
+
+function withFakeDocument(elementsById, run) {
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    createElement: (tag) => new FakeElement(tag),
+    getElementById: (id) => elementsById[id],
+  };
+  try {
+    run();
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+}
 
 test("chartCards draws a metric for every zone the live state reports", () => {
   const state = {
@@ -76,4 +114,120 @@ test("a tile reads the live value when its probe is ok", () => {
 test("a tile reads null when the probe it depends on is entirely absent", () => {
   const [, read] = TILES.find(([metric]) => metric === "battery.charge_pct");
   assert.equal(read({}), null);
+});
+
+test("depthMessage renders below the one-day threshold in hours, not a rounded-to-zero day count", () => {
+  // 0.9 day of history against a 1h window is not short (it is 21x the
+  // window asked for), so this isolates the hours-threshold behaviour from
+  // the short/long decision. Kills a mutation that sets the hours
+  // threshold to 0, which would make this branch unreachable: at that
+  // mutation, depthMessage(0.9, "1h") would return the days key instead,
+  // with days: 0.9 -- exactly the "0 days" rounding this feature exists to
+  // avoid once formatNumber's one-decimal display gets hold of it.
+  const { key, params } = depthMessage(0.9, "1h");
+  assert.equal(key, "ui.chart.depth_hours");
+  assert.equal(params.hours, 21.6);
+});
+
+test("depthMessage renders at or above the one-day threshold in days", () => {
+  const { key, params } = depthMessage(30, "24h");
+  assert.equal(key, "ui.chart.depth");
+  assert.equal(params.days, 30);
+});
+
+test("depthMessage's short-hours sentence never reaches the requested window's own count", () => {
+  // 1h requested = 1/24 day ~= 0.0417; 0.02 day (28.8 min) is genuinely
+  // short of that.
+  const { key, params } = depthMessage(0.02, "1h");
+  assert.equal(key, "ui.chart.depth_short_hours");
+  assert.equal(params.hours, 0.4);
+  assert.ok(params.hours < 1, "the short sentence must not show a full hour");
+});
+
+test("depthMessage's short-days sentence never rounds up to the requested window's own count", () => {
+  // Reported regression: formatNumber's one-decimal rounding turns 6.97
+  // into "7" for display, so a genuinely short 7d window ("Only {days}
+  // days of history so far") named the window's own day count. Flooring
+  // (not rounding) the number inside the short sentence keeps it under 7
+  // whenever the depth genuinely is.
+  const { key, params } = depthMessage(6.97, "7d");
+  assert.equal(key, "ui.chart.depth_short");
+  assert.equal(params.days, 6.9);
+  assert.ok(params.days < 7, "the short sentence must not name the full window");
+});
+
+test("depthMessage's long sentence is untouched by the flooring fix", () => {
+  // Only the short sentence's own number is floored; a window that
+  // genuinely is complete keeps its ordinary, rounded display -- exactly
+  // full here, so any flooring bleeding into this branch would be visible
+  // as a value below 90.
+  const { key, params } = depthMessage(90, "90d");
+  assert.equal(key, "ui.chart.depth", "90 on a 90d window is not short");
+  assert.equal(params.days, 90);
+});
+
+test("renderProbeTable appends a header row naming the three columns", () => {
+  // Kills a mutation that builds the <thead> but never appends it to the
+  // table: table.children would then hold only the body rows, and the
+  // three columns would be unlabelled to assistive technology.
+  const table = new FakeElement("table");
+  withFakeDocument({ "probe-table": table }, () => {
+    renderProbeTable({ probes: { cpu: { status: "ok" } } });
+  });
+  const thead = table.children.find((child) => child.tagName === "thead");
+  assert.ok(thead, "no <thead> was appended to the probe table");
+  assert.equal(thead.children.length, 1, "the header has more or fewer than one row");
+  const headerRow = thead.children[0];
+  assert.equal(headerRow.children.length, 3, "the header row does not have three columns");
+  for (const cell of headerRow.children) {
+    assert.equal(cell.tagName, "th", "a header column is not a <th>");
+  }
+});
+
+test("renderProbeTable still appends one body row per probe alongside the header", () => {
+  const table = new FakeElement("table");
+  withFakeDocument({ "probe-table": table }, () => {
+    renderProbeTable({ probes: { cpu: { status: "ok" }, battery: { status: "unavailable" } } });
+  });
+  const tbody = table.children.find((child) => child.tagName === "tbody");
+  assert.ok(tbody, "no <tbody> was appended to the probe table");
+  assert.equal(tbody.children.length, 2, "expected one row per probe");
+});
+
+test("thermalZoneSignature changes when the discovered zone set changes", () => {
+  // This is the primitive redrawCharts()/renderExpert() compare to decide
+  // whether to redraw the thermal card outside the normal trigger points
+  // (see expert.js's top-of-file comment): a machine whose /api/now failed
+  // falls back to cpu.temp.pkg alone, and this must return a different
+  // value once the real zones become known from the first SSE state.
+  const before = thermalZoneSignature({ probes: { thermal: { status: "ok", zones: {} } } });
+  const after = thermalZoneSignature({
+    probes: { thermal: { status: "ok", zones: { acpitz: 40, coretemp: 55 } } },
+  });
+  assert.notEqual(before, after);
+});
+
+test("thermalZoneSignature does not change when the same zones repeat tick to tick", () => {
+  // This is what keeps the zone-change redraw from firing on every 2s
+  // tick: two states with the same zones (rebuilt fresh each time, as the
+  // scheduler does, and in a different key order) must compare equal.
+  const first = thermalZoneSignature({
+    probes: { thermal: { status: "ok", zones: { acpitz: 40, coretemp: 55 } } },
+  });
+  const second = thermalZoneSignature({
+    probes: { thermal: { status: "ok", zones: { coretemp: 56, acpitz: 41 } } },
+  });
+  assert.equal(first, second);
+});
+
+test("thermalZoneSignature agrees with chartCards on when there are no zones to draw", () => {
+  // Both a missing state and an unavailable thermal probe fall back to
+  // cpu.temp.pkg alone in chartCards(); the signature for both must be the
+  // same "no zones" value so a transition between them is not mistaken for
+  // a zone change worth a redraw.
+  const noState = thermalZoneSignature(undefined);
+  const unavailable = thermalZoneSignature({ probes: { thermal: { status: "unavailable" } } });
+  const emptyZones = thermalZoneSignature({ probes: { thermal: { status: "ok", zones: {} } } });
+  assert.equal(noState, unavailable);
+  assert.equal(unavailable, emptyZones);
 });

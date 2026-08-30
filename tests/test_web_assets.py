@@ -394,6 +394,23 @@ class TestAppModule(unittest.TestCase):
         self.assertLess(first_render, switch_call,
                         "switchMode runs before the first state has arrived")
 
+    def test_switching_into_expert_mode_paints_the_snapshot_already_held(self):
+        # render() only calls renderExpert() while #expert is already
+        # visible, so the very first state (noted while Expert was still
+        # hidden) is otherwise never painted into the tiles, the probe
+        # table or #raw -- a reader whose stored mode is Expert would see
+        # full charts sitting above an empty tile row and an empty probe
+        # table until the next SSE tick, or forever if the stream never
+        # connects. Parsed from switchMode() specifically (not just
+        # anywhere in the file) so a call site outside the mode switch
+        # would not satisfy this.
+        switch_mode = re.search(r"function switchMode\(mode\)\s*\{(.*?)\n\}",
+                                self.js, re.DOTALL)
+        self.assertIsNotNone(switch_mode, "switchMode() not found")
+        body = switch_mode.group(1)
+        self.assertIn("renderExpert(state)", body)
+        self.assertIn("redrawCharts()", body)
+
 
 class TestLiveRegionDiscipline(unittest.TestCase):
     """A verdict re-announced every 2 s is a screen reader talking forever."""
@@ -490,6 +507,22 @@ class TestExpertMode(unittest.TestCase):
         self.assertIn("probes.thermal", self.js)
         self.assertIn("zones", self.js)
         self.assertIn("metricLabel", self.js)
+
+    def test_a_changed_zone_set_redraws_the_thermal_card_once(self):
+        # If /api/now fails on load, the thermal card falls back to
+        # cpu.temp.pkg alone with no way to tell that apart from a machine
+        # that genuinely has no zones -- nothing would otherwise ever
+        # redraw it once the real zones become known from the first SSE
+        # state. thermalZoneSignature() itself is exercised behaviourally
+        # in expert.test.js; this only locks that renderExpert() actually
+        # compares against it and calls redrawCharts() when it changed.
+        render_expert = re.search(
+            r"export function renderExpert\(state\)\s*\{(.*?)\n\}",
+            self.js, re.DOTALL)
+        self.assertIsNotNone(render_expert, "renderExpert() not found")
+        body = render_expert.group(1)
+        self.assertIn("thermalZoneSignature(state) !== lastDrawnZoneSignature", body)
+        self.assertIn("redrawCharts()", body)
 
     def test_raw_json_has_exactly_one_owner(self):
         self.assertIn('el("raw").textContent', self.js)

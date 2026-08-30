@@ -3,10 +3,13 @@
 //
 // The tile row deliberately carries no ARIA "live region" marker: it
 // repaints on every SSE event (every 2s), and one there would be a screen
-// reader talking without pause. redrawCharts() is the one thing in this
-// module that must NOT run from that 2s tick -- it only runs on a range
-// change, the refresh button, a theme change, and on first entering Expert
-// mode.
+// reader talking without pause. redrawCharts() must not otherwise run from
+// that 2s tick -- it runs on a range change, the refresh button, a theme
+// change, entering Expert mode, and one deliberate exception on the tick
+// itself: renderExpert() triggers it once when the discovered thermal
+// zones change since the charts were last drawn (see
+// thermalZoneSignature()), which a cheap signature comparison keeps from
+// firing on any tick where the zone set is unchanged.
 
 import { el, clear } from "./dom.js";
 import { translate, formatNumber, formatBytes } from "./i18n.js";
@@ -25,6 +28,11 @@ let range = DEFAULT_RANGE;
 // or a theme change) interleave cards from two different time windows with
 // no error anywhere.
 let generation = 0;
+
+// The zone signature (see thermalZoneSignature() below) the chart grid was
+// actually drawn from, last time redrawCharts() ran. null until the first
+// redraw.
+let lastDrawnZoneSignature = null;
 
 // Metric key -> [reader over state.probes, formatter]. The reader answers
 // null for "not available" (probe missing, or its own status is not "ok"),
@@ -66,19 +74,27 @@ export function isDepthShort(depthDays, rangeId) {
   return requested != null && depthDays + 0.005 < requested;
 }
 
+// The zones a probe sample that read "ok" carries -- {hwmon name: celsius}
+// -- or {} for a machine with none (or a thermal probe that is not "ok").
+// Shared by chartCards() (below) and thermalZoneSignature() (further
+// down), which redrawCharts()'s caller uses to notice when the set changes
+// after the charts were last drawn.
+function thermalZones(state) {
+  return state?.probes?.thermal?.status === "ok"
+    ? state.probes.thermal.zones || {}
+    : {};
+}
+
 // Every card except thermal is a fixed list of metric keys. The thermal
 // card also draws every zone the kernel exposed on this machine
 // (thermal.acpitz, thermal.x86_pkg_temp, ...) -- see
-// healthconsole/probes/thermal.py: a probe sample that read "ok" carries
-// zones as {hwmon name: celsius}, and those names are discovered from
+// healthconsole/probes/thermal.py: those names are discovered from
 // /sys/class/hwmon at runtime, differ per machine, and so cannot be a
 // static list. When the machine reports no zones (or the probe itself is
 // unavailable), the card still draws cpu.temp.pkg alone -- a deliberate,
 // not a broken, picture.
 export function chartCards(state) {
-  const zones = state?.probes?.thermal?.status === "ok"
-    ? state.probes.thermal.zones || {}
-    : {};
+  const zones = thermalZones(state);
   const thermalMetrics = ["cpu.temp.pkg",
     ...Object.keys(zones).map((zone) => `thermal.${zone}`)];
   return [
@@ -87,6 +103,19 @@ export function chartCards(state) {
     ["ui.chart.group.memory", ["mem.available_pct", "mem.swap.used"]],
     ["ui.chart.group.battery", ["battery.charge_pct", "battery.wear_pct"]],
   ];
+}
+
+// A cheap fingerprint of which zones the thermal card would draw for a
+// given state -- sorted so the fingerprint depends only on the set, not on
+// object key order. Compared, on every renderExpert() tick, against the
+// zone set the chart grid was actually last drawn from (see
+// lastDrawnZoneSignature below): if `/api/now` fails on load, the thermal
+// card falls back to cpu.temp.pkg alone with no way to tell that apart
+// from a machine that genuinely has no zones, and nothing would otherwise
+// ever redraw it once the real zones become known from the first SSE
+// state.
+export function thermalZoneSignature(state) {
+  return Object.keys(thermalZones(state)).sort().join(",");
 }
 
 // Colour is the only channel separating series within one chart. Cycling a
@@ -173,7 +202,7 @@ function renderTiles(state) {
   }
 }
 
-function renderProbeTable(state) {
+export function renderProbeTable(state) {
   const table = el("probe-table");
   clear(table);
   const head = document.createElement("thead");
@@ -247,16 +276,40 @@ function chartCard(title) {
 // keys.
 const HOURS_BELOW_DAYS = 1;
 
-function depthLine(depthDays) {
-  const paragraph = document.createElement("p");
-  paragraph.className = "small text-body-secondary mt-2 mb-0";
-  const short = isDepthShort(depthDays, range);
+// formatNumber() rounds -- not floors -- to one decimal for display. That
+// let the short sentence's own number round up to exactly the figure the
+// window itself asks for: a depth of 6.97 on the 7d range is genuinely
+// short (isDepthShort() compares at full precision, unaffected by any of
+// this), but displayed after formatNumber's rounding it read "Only 7 days
+// of history so far" -- naming the full window as if it were the
+// shortfall. Flooring only the number shown inside the short sentence
+// keeps it from ever reaching the window's own count, without touching
+// isDepthShort's own, separately-tuned precision.
+function flooredToOneDecimal(value) {
+  return Math.floor(value * 10) / 10;
+}
+
+// Pure: decides which catalogue key describes a card's depth and what
+// number to interpolate into it. Exported, and depthLine() kept as a thin
+// DOM wrapper around it, so the decision -- not just the catalogue key
+// names it happens to use -- can be exercised directly, the same way
+// isDepthShort() already is.
+export function depthMessage(depthDays, rangeId) {
+  const short = isDepthShort(depthDays, rangeId);
   const useHours = depthDays < HOURS_BELOW_DAYS;
   const key = useHours
     ? (short ? "ui.chart.depth_short_hours" : "ui.chart.depth_hours")
     : (short ? "ui.chart.depth_short" : "ui.chart.depth");
-  paragraph.textContent = translate(
-    key, useHours ? { hours: depthDays * 24 } : { days: depthDays });
+  const raw = useHours ? depthDays * 24 : depthDays;
+  const value = short ? flooredToOneDecimal(raw) : raw;
+  return { key, params: useHours ? { hours: value } : { days: value } };
+}
+
+function depthLine(depthDays) {
+  const paragraph = document.createElement("p");
+  paragraph.className = "small text-body-secondary mt-2 mb-0";
+  const { key, params } = depthMessage(depthDays, range);
+  paragraph.textContent = translate(key, params);
   return paragraph;
 }
 
@@ -268,6 +321,10 @@ export async function redrawCharts() {
   // before the grid is cleared, not after.
   destroyIn(grid);
   clear(grid);
+  // Whatever the thermal card ends up drawing below is drawn from this
+  // state's zones; remember which, so renderExpert() can notice later if a
+  // newer state carries a different set.
+  lastDrawnZoneSignature = thermalZoneSignature(lastKnownState());
 
   if (!chartsAvailable()) {
     grid.append(notice("alert-warning", translate("ui.chart.unavailable")));
@@ -347,4 +404,14 @@ export function renderExpert(state) {
   // Expert mode is showing -- which is exactly when renderExpert runs, on
   // every SSE event, whatever the state.
   el("raw").textContent = JSON.stringify(state, null, 2);
+  // The one deliberate exception to "redrawCharts() never runs from the 2s
+  // tick": if the zones this state reports differ from the set the chart
+  // grid was actually drawn from, redraw once to pick them up. A cheap
+  // string comparison (the same discipline findingsSignature()/
+  // gaugeSignature() already apply in simple.js) keeps this from doing
+  // anything at all on the far more common tick where the zone set has not
+  // changed.
+  if (thermalZoneSignature(state) !== lastDrawnZoneSignature) {
+    redrawCharts();
+  }
 }

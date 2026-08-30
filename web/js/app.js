@@ -65,9 +65,21 @@ function switchMode(mode) {
   el("mode-simple").setAttribute("aria-selected", String(simple));
   el("mode-expert").setAttribute("aria-selected", String(!simple));
   localStorage.setItem("mode", mode);
-  // Charts redraw only on a range change, refresh, a theme change, and
-  // here -- never on the 2s tick that renderExpert() rides along on.
-  if (!simple) redrawCharts();
+  if (!simple) {
+    // render() only calls renderExpert() while #expert is already visible,
+    // so the state from the very first /api/now response -- which arrived
+    // while Expert was still hidden -- was never painted into the tiles,
+    // the probe table or #raw. Paint it now from whatever render() has
+    // already noted, rather than leaving those panels empty until the next
+    // SSE tick (which, if the stream never connects at all, is never).
+    const state = lastKnownState();
+    if (state) renderExpert(state);
+    // Charts redraw only on a range change, refresh, a theme change, and
+    // here -- never on the 2s tick that renderExpert() rides along on
+    // (with one exception it owns itself: see thermalZoneSignature() in
+    // expert.js).
+    redrawCharts();
+  }
 }
 
 function render(state) {

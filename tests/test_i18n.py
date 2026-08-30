@@ -201,7 +201,6 @@ class TestNoJargonLeaksToSimpleMode(unittest.TestCase):
 
 class TestActionCatalogueWording(unittest.TestCase):
     def test_every_action_has_a_label_a_description_and_a_confirmation(self):
-        from healthconsole.actions import Risk
         for locale in locales():
             catalogue = load(locale)
             for action_id in sorted(ACTION_IDS):

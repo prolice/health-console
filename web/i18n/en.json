@@ -90,7 +90,7 @@
   "risk.sensitive.icon": "✖",
 
   "action.apt.refresh.label": "Refresh the list of available updates",
-  "action.apt.refresh.description": "Asks the software sources what versions they now offer. Nothing on this computer is changed or installed.",
+  "action.apt.refresh.description": "Asks your software sources which versions they now offer and updates the list kept on this computer. Nothing is installed, and no software you have is changed.",
   "action.apt.refresh.confirm": "This contacts your software sources and updates the local list of available versions. It installs nothing.",
 
   "ui.error.action.busy": "Another action is already running. Wait for it to finish.",

@@ -78,7 +78,7 @@
   "ui.actions.result.killed": "Interrompu après {seconds} s sans avoir abouti.",
   "ui.actions.audit.when": "Quand",
   "ui.actions.audit.what": "Action",
-  "ui.actions.audit.source": "Depuis",
+  "ui.actions.audit.source": "Origine",
   "ui.actions.audit.outcome": "Résultat",
   "ui.actions.audit.empty": "Rien n'a encore été lancé.",
 
@@ -90,7 +90,7 @@
   "risk.sensitive.icon": "✖",
 
   "action.apt.refresh.label": "Actualiser la liste des mises à jour disponibles",
-  "action.apt.refresh.description": "Demande aux sources de logiciels quelles versions elles proposent désormais. Rien n'est modifié ni installé sur cet ordinateur.",
+  "action.apt.refresh.description": "Demande aux sources de logiciels quelles versions elles proposent désormais et met à jour la liste conservée sur cet ordinateur. Aucun logiciel n'est installé, et les logiciels que vous avez ne sont pas modifiés.",
   "action.apt.refresh.confirm": "Cette action contacte vos sources de logiciels et met à jour la liste locale des versions disponibles. Elle n'installe rien.",
 
   "ui.error.action.busy": "Une autre action est déjà en cours. Attendez qu'elle se termine.",

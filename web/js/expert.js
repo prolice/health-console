@@ -55,10 +55,15 @@ const RANGE_DAYS = { "1h": 1 / 24, "24h": 1, "7d": 7, "90d": 90 };
 
 // depth_days can land a hair under the requested window from rounding alone
 // (the server rounds to two decimals) even when history genuinely covers
-// it; the epsilon absorbs that without hiding a real shortfall.
+// it; the epsilon absorbs that without hiding a real shortfall. Kept at
+// half the server's own rounding step (0.01 day): anything larger than
+// that risks swallowing a real shortfall on the 1h range, whose entire
+// window (1/24 ~= 0.0417 day) is barely four times the old 0.05 epsilon --
+// with that epsilon, depthDays + 0.05 was never less than 0.0417 for any
+// depthDays >= 0, so ui.chart.depth_short was unreachable on that range.
 export function isDepthShort(depthDays, rangeId) {
   const requested = RANGE_DAYS[rangeId];
-  return requested != null && depthDays + 0.05 < requested;
+  return requested != null && depthDays + 0.005 < requested;
 }
 
 // Every card except thermal is a fixed list of metric keys. The thermal
@@ -77,11 +82,29 @@ export function chartCards(state) {
   const thermalMetrics = ["cpu.temp.pkg",
     ...Object.keys(zones).map((zone) => `thermal.${zone}`)];
   return [
-    ["ui.chart.group.cpu", ["cpu.usage", "load.1"], "--hc-info"],
-    ["ui.chart.group.thermal", thermalMetrics, "--hc-urgent"],
-    ["ui.chart.group.memory", ["mem.available_pct", "mem.swap.used"], "--hc-ok"],
-    ["ui.chart.group.battery", ["battery.charge_pct", "battery.wear_pct"], "--hc-attention"],
+    ["ui.chart.group.cpu", ["cpu.usage", "load.1"]],
+    ["ui.chart.group.thermal", thermalMetrics],
+    ["ui.chart.group.memory", ["mem.available_pct", "mem.swap.used"]],
+    ["ui.chart.group.battery", ["battery.charge_pct", "battery.wear_pct"]],
   ];
+}
+
+// Colour is the only channel separating series within one chart. Cycling a
+// small fixed palette by dataset index (rather than tying it to which card
+// this is) keeps every series in a multi-metric card visually distinct --
+// two series sharing one card no longer land on the same default colour --
+// and a dash pattern beyond the palette's length keeps a fifth+ series (a
+// machine with several thermal zones) from repeating a colour
+// indistinguishably from an earlier one.
+const COLOUR_PALETTE = ["--hc-info", "--hc-ok", "--hc-attention", "--hc-urgent"];
+const DASH_PATTERNS = [[], [6, 3], [2, 2], [8, 3, 2, 3]];
+
+function seriesStyle(index) {
+  const cycle = Math.floor(index / COLOUR_PALETTE.length);
+  return {
+    borderColor: themeColour(COLOUR_PALETTE[index % COLOUR_PALETTE.length]),
+    borderDash: DASH_PATTERNS[cycle % DASH_PATTERNS.length],
+  };
 }
 
 export function currentRange() { return range; }
@@ -153,6 +176,17 @@ function renderTiles(state) {
 function renderProbeTable(state) {
   const table = el("probe-table");
   clear(table);
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const key of ["ui.expert.probe_table.name", "ui.expert.probe_table.status",
+                     "ui.expert.probe_table.detail"]) {
+    const headCell = document.createElement("th");
+    headCell.scope = "col";
+    headCell.textContent = translate(key);
+    headRow.append(headCell);
+  }
+  head.append(headRow);
+  table.append(head);
   const body = document.createElement("tbody");
   for (const [name, probe] of Object.entries((state && state.probes) || {})) {
     const row = document.createElement("tr");
@@ -160,6 +194,10 @@ function renderProbeTable(state) {
     nameCell.scope = "row";
     nameCell.textContent = name;
     const statusCell = document.createElement("td");
+    // Left untranslated deliberately: "ok" / "unavailable" / "incoherent"
+    // are diagnostic material, the same ruling already applied to the raw
+    // reason column beside it and to the untranslated probe reason simple.js
+    // shows behind a translated lead-in.
     statusCell.textContent = probe.status || "";
     const detailCell = document.createElement("td");
     // Diagnostic material only -- reason/eval_error are raw English from
@@ -200,12 +238,25 @@ function chartCard(title) {
 // task, was ignored on this side. Without this line, a 90 d window that
 // only holds six days of history reads as a collection failure rather than
 // as a history that has simply just begun.
+//
+// Below one day, {days} rounds to "0" under formatNumber's one-decimal
+// display (a console running twenty minutes is depth_days: 0.01) and reads
+// as a collection failure of its own -- the same falsehood this feature
+// exists to prevent, just with fewer digits. Below that threshold the
+// value is shown in hours instead, through a second pair of catalogue
+// keys.
+const HOURS_BELOW_DAYS = 1;
+
 function depthLine(depthDays) {
   const paragraph = document.createElement("p");
   paragraph.className = "small text-body-secondary mt-2 mb-0";
+  const short = isDepthShort(depthDays, range);
+  const useHours = depthDays < HOURS_BELOW_DAYS;
+  const key = useHours
+    ? (short ? "ui.chart.depth_short_hours" : "ui.chart.depth_hours")
+    : (short ? "ui.chart.depth_short" : "ui.chart.depth");
   paragraph.textContent = translate(
-    isDepthShort(depthDays, range) ? "ui.chart.depth_short" : "ui.chart.depth",
-    { days: depthDays });
+    key, useHours ? { hours: depthDays * 24 } : { days: depthDays });
   return paragraph;
 }
 
@@ -223,7 +274,7 @@ export async function redrawCharts() {
     return;
   }
 
-  for (const [titleKey, metrics, colourVar] of chartCards(lastKnownState())) {
+  for (const [titleKey, metrics] of chartCards(lastKnownState())) {
     if (myGeneration !== generation) return;
     const card = chartCard(translate(titleKey));
     grid.append(card.column);
@@ -239,7 +290,14 @@ export async function redrawCharts() {
     }
     if (myGeneration !== generation) { card.column.remove(); return; }
 
-    const drawable = series.filter((s) => s.points.length > 0);
+    // Each metric is kept paired with its own series through the empty
+    // filter, so a dropped (empty) series takes its label with it -- never
+    // the first metric's name stitched onto the first non-empty series'
+    // numbers, which is what a plain series.filter() alone (with metrics
+    // indexed separately) would risk the moment series[0] is the empty one.
+    const drawable = metrics
+      .map((metric, index) => ({ metric, series: series[index] }))
+      .filter((pair) => pair.series.points.length > 0);
     if (drawable.length === 0) {
       // Not a flat line at zero: a flat line is a measurement, and the
       // absence of one is not.
@@ -254,19 +312,30 @@ export async function redrawCharts() {
     card.body.append(holder);
     drawLine(canvas, {
       range,
-      points: drawable[0].points,
+      points: drawable[0].series.points,
       // The server returns points already ascending by timestamp, which is
       // exactly the precondition normalized: true promises (see charts.js).
-      datasets: metrics.map((metric, index) => ({
+      datasets: drawable.map(({ metric, series: s }, index) => ({
         label: metricLabel(metric),
-        data: series[index].points.map(([x, y]) => ({ x, y })),
+        data: s.points.map(([x, y]) => ({ x, y })),
         normalized: true,
-        borderColor: themeColour(index === 0 ? colourVar : "--hc-info"),
         borderWidth: 2, fill: false, tension: 0.25, pointRadius: 0,
+        ...seriesStyle(index),
       })),
     });
-    labelChart(canvas, describeSeries(metrics[0], range, drawable[0].points));
-    card.body.append(depthLine(Math.min(...series.map((s) => s.depthDays))));
+    // A <canvas> has no other accessible content: this sentence is all an
+    // assistive-technology user gets, so it must describe every series
+    // actually drawn -- not just the first metric named in the card,
+    // which can be the one series that got filtered out above.
+    labelChart(canvas, drawable
+      .map(({ metric, series: s }) => describeSeries(metric, range, s.points))
+      .join(" "));
+    // Only the drawn series count towards "how much history is there": an
+    // empty series (already excluded from `drawable` above) always reports
+    // depth_days: 0 from the server, and folding that into the minimum
+    // would print "0 days" beneath a chart that is, in fact, full.
+    card.body.append(
+      depthLine(Math.min(...drawable.map(({ series: s }) => s.depthDays))));
   }
 }
 

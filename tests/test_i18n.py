@@ -38,9 +38,12 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.chart.group.memory", "ui.chart.group.battery",
     # Chart states
     "ui.chart.empty", "ui.chart.depth", "ui.chart.depth_short",
+    "ui.chart.depth_hours", "ui.chart.depth_short_hours",
     "ui.chart.summary", "ui.chart.unavailable",
     # Expert sections
     "ui.expert.overview", "ui.expert.probes", "ui.expert.raw",
+    "ui.expert.probe_table.name", "ui.expert.probe_table.status",
+    "ui.expert.probe_table.detail",
     # Errors
     "ui.error.history",
 })

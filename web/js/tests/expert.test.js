@@ -37,10 +37,26 @@ test("isDepthShort flags a window shorter than what was requested", () => {
   assert.equal(isDepthShort(1, "24h"), false);
 });
 
-test("isDepthShort tolerates rounding noise just under the requested window", () => {
-  // depth_days is rounded to two decimals server-side; a window that
-  // genuinely covers the request must not be flagged short because of it.
-  assert.equal(isDepthShort(89.98, "90d"), false);
+test("isDepthShort tolerates rounding noise within the server's own rounding step", () => {
+  // depth_days is rounded to two decimals server-side; a depth within half
+  // that step of the requested window must not be flagged short because
+  // of rounding alone.
+  assert.equal(isDepthShort(89.997, "90d"), false);
+});
+
+test("isDepthShort catches a real shortfall a looser epsilon would mask", () => {
+  // The epsilon must stay small: 0.05 (the original value) is larger than
+  // the entire 1h window and made ui.chart.depth_short unreachable on that
+  // range. A 90d window actually missing half an hour is a real shortfall,
+  // not rounding noise, and must still be reported.
+  assert.equal(isDepthShort(89.98, "90d"), true);
+});
+
+test("isDepthShort is reachable on the 1h range, unlike with the original 0.05 epsilon", () => {
+  // 1/24 day ~= 0.0417; the old 0.05 epsilon meant depthDays + 0.05 was
+  // never less than that for any depthDays >= 0, so a console younger
+  // than the requested window could never be told so on this range.
+  assert.equal(isDepthShort(0.01, "1h"), true);
 });
 
 test("a tile reads null, not a fabricated zero, when its probe is unavailable", () => {

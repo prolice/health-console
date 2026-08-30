@@ -109,6 +109,12 @@ async function start() {
     paintRangeControl();
     const state = lastKnownState();
     if (state) render(state);
+    // Card titles, legend labels, depth sentences and aria-labels are all
+    // produced at chart-draw time, not on every render() like the rest of
+    // the page -- so switching locale while Expert mode is open would
+    // otherwise leave every chart in the old language until the reader
+    // happens to click a range button.
+    if (!el("expert").hidden) redrawCharts();
   });
   // The verdict gauge skips its own redraw when the score has not moved
   // (see simple.js's gaugeSignature()), so a theme flip alone would leave
@@ -130,16 +136,21 @@ async function start() {
   try {
     await loadFallback();
     await setLocale(pickLocale());
-    // Only now, with the catalogue loaded and the range buttons painted, is
-    // it safe to switch into a stored "expert" mode: switchMode() redraws
-    // every chart, and every title and notice a chart card can show is
-    // translated text that would otherwise come back empty.
-    switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
     try {
       render(await (await fetch("/api/now", { headers: authHeaders() })).json());
     } catch (error) {
       console.warn("initial state unavailable", error);
     }
+    // Only now -- catalogue loaded, range buttons painted, and the first
+    // state (if any) already noted by the render() call above -- is it safe
+    // to switch into a stored "expert" mode: switchMode() redraws every
+    // chart, and the thermal card's zone list is read from
+    // lastKnownState() at that moment. Switching earlier would still show
+    // translated text (the previous ordering bug), but the thermal card
+    // would silently fall back to cpu.temp.pkg alone on every single
+    // reload, indistinguishable from a machine that genuinely has no
+    // sensor zones.
+    switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
   } catch (error) {
     // The catalogue itself is what failed here, so there is nothing left
     // to translate this sentence with: every other text node in

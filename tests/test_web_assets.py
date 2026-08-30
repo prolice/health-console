@@ -372,6 +372,28 @@ class TestAppModule(unittest.TestCase):
     def test_default_mode_is_simple(self):
         self.assertIn('DEFAULT_MODE = "simple"', self.js)
 
+    def test_locale_change_redraws_expert_charts(self):
+        # Card titles, legend labels, depth sentences and aria-labels are
+        # all produced at chart-draw time; without this, switching locale
+        # while Expert mode is open leaves every chart in the old language
+        # until the reader happens to click a range button.
+        handler = re.search(r"whenLocaleChanges\(\(\) => \{(.*?)\n  \}\);",
+                            self.js, re.DOTALL)
+        self.assertIsNotNone(handler, "whenLocaleChanges handler not found")
+        self.assertIn("redrawCharts", handler.group(1))
+
+    def test_a_stored_expert_mode_switches_in_after_the_first_state_arrives(self):
+        # Switching mode earlier reads lastKnownState() as null, so the
+        # thermal card silently falls back to cpu.temp.pkg alone --
+        # indistinguishable from a machine that genuinely has no sensor
+        # zones -- on every single reload of a stored "expert" mode.
+        first_render = self.js.find('render(await (await fetch("/api/now"')
+        switch_call = self.js.find('switchMode(localStorage.getItem("mode")')
+        self.assertNotEqual(first_render, -1, "initial /api/now render not found")
+        self.assertNotEqual(switch_call, -1, "initial switchMode call not found")
+        self.assertLess(first_render, switch_call,
+                        "switchMode runs before the first state has arrived")
+
 
 class TestLiveRegionDiscipline(unittest.TestCase):
     """A verdict re-announced every 2 s is a screen reader talking forever."""
@@ -447,7 +469,20 @@ class TestExpertMode(unittest.TestCase):
     def test_a_generation_counter_guards_against_concurrent_redraws(self):
         # Two quick range clicks (or a click racing refresh, or a theme
         # change) must not interleave cards from two different windows.
-        self.assertIn("generation", self.js)
+        # Checked against the guard's actual comparison, not just the word
+        # "generation" appearing somewhere -- deleting every comparison
+        # while leaving the counter declared would otherwise still pass.
+        redraw = re.search(
+            r"export async function redrawCharts\(\)\s*\{(.*?)\n\}",
+            self.js, re.DOTALL)
+        self.assertIsNotNone(redraw, "redrawCharts() not found")
+        body = redraw.group(1)
+        guard_count = body.count("myGeneration !== generation")
+        self.assertGreaterEqual(
+            guard_count, 2,
+            "redrawCharts must re-check its generation after every await, "
+            "not just once, or a stale call can still append into a grid "
+            "a newer call already started clearing")
 
     def test_thermal_card_is_built_from_the_live_zones_not_a_static_list(self):
         # thermal.acpitz, thermal.x86_pkg_temp, ... are discovered from the
@@ -459,6 +494,38 @@ class TestExpertMode(unittest.TestCase):
     def test_raw_json_has_exactly_one_owner(self):
         self.assertIn('el("raw").textContent', self.js)
         self.assertNotIn('el("raw").textContent', js("simple.js"))
+
+    def test_depth_reflects_only_the_series_actually_drawn(self):
+        # An empty series (already filtered out of `drawable`) always
+        # reports depth_days: 0 from the server; folding it into the
+        # minimum would print "0 days" under a chart that is, in fact,
+        # full -- e.g. a Temperature card whose thermal.acpitz series came
+        # back empty while cpu.temp.pkg held a month of readings.
+        self.assertIn("drawable.map(({ series: s }) => s.depthDays)", self.js)
+        self.assertNotIn("series.map((s) => s.depthDays)", self.js)
+
+    def test_the_accessible_description_never_detaches_a_series_from_its_own_label(self):
+        # A <canvas> has no other accessible content. Pairing metrics and
+        # series by shared array index survives a filtered-out series only
+        # if the filter is applied to (metric, series) pairs together --
+        # never to the series alone while indexing metrics separately.
+        self.assertIn("pair.series.points.length > 0", self.js)
+        self.assertNotIn("describeSeries(metrics[0]", self.js)
+
+    def test_each_series_in_a_card_gets_its_own_colour(self):
+        # Two series sharing one card must not share one legend swatch --
+        # colour is the only channel separating them.
+        self.assertIn("COLOUR_PALETTE", self.js)
+        self.assertNotIn("index === 0 ? colourVar", self.js)
+
+    def test_depth_below_a_day_is_shown_in_hours_not_a_rounded_to_zero_day_count(self):
+        self.assertIn("ui.chart.depth_hours", self.js)
+        self.assertIn("ui.chart.depth_short_hours", self.js)
+
+    def test_probe_table_has_a_header_row(self):
+        self.assertIn("ui.expert.probe_table.name", self.js)
+        self.assertIn("ui.expert.probe_table.status", self.js)
+        self.assertIn("ui.expert.probe_table.detail", self.js)
 
 
 class TestMetricKeysExist(unittest.TestCase):
@@ -479,7 +546,11 @@ class TestMetricKeysExist(unittest.TestCase):
         # (?!\s*:) excludes a match used as an object key -- simple.js's
         # FINDING_METRIC maps finding ids ("cpu.usage_high", "battery.wear")
         # to the metric they illustrate, and those ids happen to match this
-        # same dotted shape without being metric keys themselves.
+        # same dotted shape without being metric keys themselves. Blind
+        # spot: a genuine metric key immediately followed by a colon (e.g.
+        # as a ternary's alternate, "cond ? a : "cpu.usage"") would be
+        # skipped too. Nothing in this codebase writes a metric key that
+        # way today, but the next reader should not have to rediscover it.
         used = set(re.findall(r'"((?:cpu|mem|load|battery)\.[a-z0-9_.]+)"(?!\s*:)',
                               source))
         unknown = used - self.KNOWN

@@ -75,8 +75,13 @@ release).
 ./bin/health-console run
 ```
 
-Then open `http://127.0.0.1:8787/` (or the LAN address it prints, if `bind`
-is not loopback). `Ctrl+C` stops it.
+Then open `http://127.0.0.1:8787/`. `Ctrl+C` stops it.
+
+**By default it listens on every interface**, not only on loopback, and prints
+the LAN address alongside the local one. Nothing is exposed by that on its own:
+without a token in the configuration, every non-loopback request is refused with
+a `401`. Set `bind = "127.0.0.1"` if you want it not to listen beyond this
+machine at all.
 
 Other commands:
 
@@ -94,7 +99,7 @@ setting below takes its default). Example:
 
 ```toml
 [server]
-bind  = "127.0.0.1"   # "0.0.0.0" or "::" to also listen on the LAN
+bind  = "0.0.0.0"     # the default — every interface. "127.0.0.1" for loopback only
 port  = 8787
 token = ""            # required for any non-loopback request; see Security notes
 
@@ -120,9 +125,16 @@ deploying it anywhere else.
 - **There is no "run this command" route.** The action catalogue is declared in code;
   the browser sends an identifier, never a command fragment. `shell=False`, and no
   text from the network is interpolated into an argument list.
-- **It listens on the local network**, protected by a token. Actions are **refused
-  outside `127.0.0.1`** unless explicitly enabled in configuration: reading and acting
-  do not carry the same cost when you get it wrong.
+- **It listens on the local network by default** (`bind = "0.0.0.0"`), protected by
+  a token. With no token configured the socket is open but every non-loopback
+  request is refused, so an unconfigured console is not readable from the LAN —
+  it is listening, not answering. Actions will be **refused outside `127.0.0.1`**
+  unless explicitly enabled in configuration: reading and acting do not carry the
+  same cost when you get it wrong.
+- **The token crosses the network in clear text.** This is plain HTTP with no TLS,
+  so anyone able to observe traffic on the same network can read it, and it grants
+  access to detailed telemetry about the machine. `token --rotate` invalidates a
+  token you believe was seen.
 - **The token can also be passed as `?k=` in the URL**, so a phone can open a
   bookmarked or shared link. That is a deliberate trade-off: unlike the header path,
   it persists in browser history and in any intermediary's logs (LAN router, proxy,

@@ -1,0 +1,85 @@
+/* What Bootstrap does not do: severity colours, the two-mode layout, and
+   the dimming that says the data has frozen. Everything else is Bootstrap. */
+
+:root,
+:root[data-bs-theme="light"] {
+  --hc-ok: #1c6b3a;
+  --hc-info: #2c5a8a;
+  --hc-attention: #8a5a00;
+  --hc-urgent: #a02020;
+  --hc-grid: rgba(0, 0, 0, 0.08);
+  /* Chart series colours only -- never reused for severity. Four hues so a
+     card with up to four series (e.g. every discovered thermal zone) never
+     repeats one, and none of them is --hc-urgent's red: a machine with a
+     fourth hwmon zone must not draw it in the colour this console uses
+     elsewhere to mean "act now". */
+  --hc-series-1: #2f6ea5;
+  --hc-series-2: #6a3f9e;
+  --hc-series-3: #b2650f;
+  --hc-series-4: #b23a6b;
+}
+
+:root[data-bs-theme="dark"] {
+  --hc-ok: #6cc48d;
+  --hc-info: #8bb8e8;
+  --hc-attention: #e0b060;
+  --hc-urgent: #f08080;
+  --hc-grid: rgba(255, 255, 255, 0.12);
+  --hc-series-1: #7fb2df;
+  --hc-series-2: #b79ae0;
+  --hc-series-3: #e0a865;
+  --hc-series-4: #e08fb0;
+}
+
+.bar {
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  align-items: center; justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+}
+
+.controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.locale-field { display: flex; gap: 0.5rem; align-items: center; }
+
+/* Touch targets: the framework's default buttons are shorter than the 44 px
+   the design document requires. */
+.btn, .form-select { min-height: 44px; }
+#mode-group .btn, #theme-group .btn { min-width: 88px; }
+#range-group .btn { min-width: 60px; }
+
+.view { max-width: 46rem; margin: 0 auto; padding: 1.25rem; }
+.view-wide { max-width: 76rem; }
+
+/* Chart.js's responsive:true sizes the canvas from this box (not from the
+   canvas's own width/height attributes), so the box -- not the canvas --
+   must carry the fixed dimensions. Without a fixed height here, Chart.js
+   reads the height of whatever the canvas is sitting in (the whole
+   card-body), and the doughnut inflates to match. */
+.gauge-holder { position: relative; width: 180px; height: 180px; margin: 0 auto 0.75rem; }
+
+.finding { border-left-width: 4px !important; margin-top: 1rem; }
+.finding .tag { font-weight: 700; font-size: 0.85rem; }
+/* Diagnostic material (a probe's raw, untranslated failure reason), kept
+   visible but visually secondary to the translated explanation above it. */
+.finding .raw-detail { margin-top: 0.5rem; font-size: 0.8rem; opacity: 0.8; }
+
+.severity-OK        { border-left-color: var(--hc-ok) !important; }
+.severity-OK .tag   { color: var(--hc-ok); }
+.severity-INFO      { border-left-color: var(--hc-info) !important; }
+.severity-INFO .tag { color: var(--hc-info); }
+.severity-ATTENTION      { border-left-color: var(--hc-attention) !important; }
+.severity-ATTENTION .tag { color: var(--hc-attention); }
+.severity-URGENT         { border-left-color: var(--hc-urgent) !important; }
+.severity-URGENT .tag    { color: var(--hc-urgent); }
+
+.freshness.stale { color: var(--hc-attention); font-weight: 600; }
+body.stale .view { opacity: 0.45; }
+
+.chart-holder { position: relative; height: 200px; }
+.sparkline-holder { position: relative; height: 44px; margin-top: 0.5rem; }
+
+/* Retained for the "auto" theme setting, which resolves through this query. */
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark; } }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

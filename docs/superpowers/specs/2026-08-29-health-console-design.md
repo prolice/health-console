@@ -43,7 +43,7 @@ These measurements are not decoration: each one constrains a decision.
   no virtualenv.**
 - **Resources** — 4 cores, 5.2 GB of RAM with ~1.5 GB actually available.
   → **Budget: < 60 MB RSS for the service, < 2 % CPU on average, default database
-  ≈ 32 MB.** A health tool that degrades the health of the machine is a design
+  ≈ 54 MB.** A health tool that degrades the health of the machine is a design
   failure. This budget is what forces the display cadence (2 s, in memory) apart
   from the write cadence (30 s, to disk) — see §6.1.
 - **Hardware** — Crucial MX300 489 GB SSD (`/dev/sda`), AMD Radeon HD 6730M GPU,
@@ -160,8 +160,10 @@ sparkline over the last 60 minutes needs a point every 2 seconds; a 90-day trend
 needs nothing of the sort.
 
 - **In-memory ring buffer** — 2 s resolution over a rolling 60 minutes. It feeds the
-  live view and the sparklines. 1,800 points × ~25 metrics × 8 bytes
-  ≈ **360 KiB of RAM**. Nothing is written to disk at that cadence.
+  live view and the sparklines. Measured (`tracemalloc`, 1,800 points × ~25
+  metrics stored as `(float, float)` tuples in a deque — CPython object overhead
+  dominates over the 8-byte C doubles an earlier, unmeasured estimate assumed):
+  ≈ **5.3 MB of RAM**. Nothing is written to disk at that cadence.
 - **Database** — one write every 30 s (`store_seconds`), aggregated from the ring
   (average, min, max). More than enough for history, and it **divides the volume by
   15**.
@@ -221,10 +223,13 @@ machine:
 
 ```
 rows/day  = 86400 / store_seconds × metric_count
-size      ≈ raw_days × 2.9 MB  +  aggregate_days × 0.29 MB  +  ~3 MB (rest)
+size      ≈ raw_days × 4.9 MB  +  aggregate_days × 0.49 MB  +  ~3 MB (rest)
 ```
 
-With the defaults on this machine (~25 metrics): **≈ 32 MB**.
+using **68 bytes per metric row** (`BYTES_PER_METRIC_ROW`, measured on 500,000
+rows — not the 40-byte guess an earlier draft of this section used, which
+understated the total by about 45%). With the defaults on this machine
+(~25 metrics): **≈ 54 MB**.
 
 Beyond 500 MB projected, startup prints an explicit warning naming the estimate and
 the setting responsible — **but does not block**: it is the user's machine and the
@@ -508,10 +513,28 @@ to enable it, never a reassuring zero.
 
 ### 10.5 Front-end technique
 
-No build step, no CDN — the console must work without Internet access, which is the
-least one can ask of a diagnostic tool. Native ES modules, modern CSS (grid,
-container queries, `oklch`), hand-drawn SVG charts. Budget: < 60 KiB of uncompressed
-JS, plus the message catalogues.
+No build step and **no CDN** — the console must work without Internet access,
+which is the least one can ask of a diagnostic tool. Native ES modules under
+`web/js/`, and two libraries vendored under `web/vendor/` and served from disk:
+Bootstrap 5.3 for the layout and Chart.js 4 for the charts.
+
+Vendoring rather than linking is not a preference: `default-src 'self'` means a
+CDN stylesheet would fail **silently** in the browser.
+
+Budget: < 80 KiB of uncompressed JS **for code we write**, enforced across
+`web/js/*.js`. The vendored libraries sit outside that budget and are recorded
+with their exact versions in `web/vendor/LICENSES.md`.
+
+Superseded (first revision): this section previously called for hand-drawn SVG
+charts and counted the vendored libraries against the 60 KiB budget. See
+`2026-08-30-health-console-ui-redesign.md` §2.2.
+
+Superseded (second revision): the 60 KiB budget itself was raised to 80 KiB when
+the UI scope expanded from three static pages to eight ES modules implementing an
+interactive dashboard with gauges, sparklines, chart grids, probes, and
+accessible descriptions. See `2026-08-30-health-console-ui-redesign.md` §2.2
+supplement. The vendored and own-code budgets remain separate; only the latter
+increased.
 
 ## 11. Internationalisation
 
@@ -575,11 +598,22 @@ data, and translating them would make problem reports harder to compare.
   access, compared in **constant time** (`hmac.compare_digest`).
 - The token lives in the browser's `localStorage`, **never in a URL** that could be
   pasted into a chat or land in a history file.
+- A `?k=<token>` query parameter is also accepted, for the one case `localStorage`
+  cannot cover: a phone opening a bookmarked or shared link, with no way to set a
+  header on plain navigation. This is a deliberate residual exposure — it persists
+  in browser history and in any intermediary's logs (LAN router, proxy, connection
+  tracking) beyond what this process's own access-log suppression and
+  `Referrer-Policy: no-referrer` can reach.
 - Actions refused off-loopback unless `allow_remote_actions = true`.
 - Closed catalogue, fixed `argv`, `shell=False`, no interpolation.
 - `sudoers.d` limited to the named binaries with their arguments.
 - Headers: `Content-Security-Policy: default-src 'self'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  Amended 2026-08-30 (post-implementation): the CSP's `img-src` clause was
+  widened to `'self' data:` so that Bootstrap's vendored icons (embedded as
+  `data:image/svg+xml` URIs) render — see
+  `2026-08-30-health-console-ui-redesign.md` §4.2 correction. `script-src` and
+  `style-src` remain governed by `default-src 'self'`, unrelaxed.
 - systemd hardening: `NoNewPrivileges=no` (mandatory, `sudo` depends on it),
   `ProtectSystem=strict` with `ReadWritePaths=` limited to
   `~/.local/share/health-console` and `~/.config/health-console`, plus `PrivateTmp`
@@ -657,7 +691,10 @@ health-console/
 │   ├── plausibility.py ring.py       cli.py
 │   └── probes/  cpu memory thermal network battery storage smart
 │                updates services journal processes osinfo
-├── web/  index.html  style.css  app.js  i18n/en.json  i18n/fr.json
+├── web/  index.html  style.css  i18n/en.json  i18n/fr.json
+│        js/  app.js  charts.js  dom.js  expert.js  history.js
+│             i18n.js  simple.js  stream.js  theme-boot.js
+│        vendor/  bootstrap.min.css  bootstrap.bundle.min.js  chart.umd.min.js
 ├── systemd/health-console.service
 ├── packaging/sudoers.d/health-console
 ├── tests/  fixtures/  test_verdict.py  test_store.py  test_server.py

@@ -1,0 +1,97 @@
+{
+  "ui.title": "Health Console",
+  "ui.mode.simple": "Simple",
+  "ui.mode.expert": "Expert",
+  "ui.mode.group": "Detail level",
+  "ui.language": "Language",
+  "ui.score.label": "Overall health",
+  "ui.freshness.live": "Up to date · last reading at {time}",
+  "ui.freshness.stale": "Data frozen since {time} · reconnecting…",
+  "ui.probe.unavailable": "Measurement unavailable: {probe}",
+  "ui.probe.unavailable.why": "This measurement could not be taken right now.",
+  "ui.probe.unavailable.raw_prefix": "Technical detail:",
+  "ui.state.no_measurement": "No measurement yet",
+  "ui.state.no_measurement.detail": "The console has not completed its first measurement yet. This should only take a few seconds.",
+
+  "ui.theme.label": "Theme",
+  "ui.theme.auto": "Auto",
+  "ui.theme.light": "Light",
+  "ui.theme.dark": "Dark",
+
+  "ui.range.group": "Time window",
+  "ui.range.1h": "1 h",
+  "ui.range.24h": "24 h",
+  "ui.range.7d": "7 d",
+  "ui.range.90d": "90 d",
+  "ui.refresh": "Refresh",
+
+  "ui.metric.cpu.usage": "Processor use",
+  "ui.metric.load.1": "Load, 1 minute",
+  "ui.metric.cpu.temp.pkg": "Processor temperature",
+  "ui.metric.mem.available": "Memory available",
+  "ui.metric.mem.available_pct": "Memory free",
+  "ui.metric.mem.swap.used": "Moved to disk",
+  "ui.metric.battery.charge_pct": "Battery charge",
+  "ui.metric.battery.wear_pct": "Battery wear",
+
+  "ui.metric.cpu.usage.hint": "How busy the processor is right now, as a share of its full capacity. It naturally rises during heavy work and should fall back down once that work finishes.",
+  "ui.metric.cpu.temp.pkg.hint": "The temperature measured by the processor's own sensor. The console raises a concern once it sits in the high 80s for a few minutes, or straight away if it climbs much higher.",
+  "ui.metric.mem.available.hint": "How much memory is free for programs to use right away, without needing to close anything first.",
+  "ui.metric.mem.swap.used.hint": "Data the computer has parked on the disk to free up memory. A small amount is normal; a large or growing figure means memory is tight.",
+  "ui.metric.battery.charge_pct.hint": "The battery's current charge, as a share of a full charge — falling while unplugged, rising while it charges.",
+  "ui.metric.load.1.hint": "A smoothed recent average of the work being done, waiting for a turn on the processor, or stuck waiting on the disk. A figure around the number of processor cores means the machine is busy but keeping up; if it is high while the processor itself looks idle, a slow or struggling disk is often the reason.",
+
+  "ui.chart.group.cpu": "Processor",
+  "ui.chart.group.thermal": "Temperature",
+  "ui.chart.group.memory": "Memory",
+  "ui.chart.group.battery": "Battery",
+
+  "ui.chart.empty": "Nothing recorded over this window yet.",
+  "ui.chart.depth_short": "Only {days} days of history so far. Collection began recently — this is not a fault.",
+  "ui.chart.depth_short_day": "Only {days} day of history so far. Collection began recently — this is not a fault.",
+  "ui.chart.depth_short_hours": "Only {hours} hours of history so far. Collection began recently — this is not a fault.",
+  "ui.chart.depth_short_hour": "Only {hours} hour of history so far. Collection began recently — this is not a fault.",
+  "ui.chart.summary": "{metric} over {range}: minimum {min}, maximum {max}, last recorded {current}.",
+  "ui.chart.unavailable": "Charts are unavailable: the drawing library did not load. Every reading above is still current.",
+
+  "ui.expert.overview": "Current readings",
+  "ui.expert.probes": "Probes",
+  "ui.expert.raw": "Raw data",
+  "ui.expert.probe_table.name": "Probe",
+  "ui.expert.probe_table.status": "Status",
+  "ui.expert.probe_table.detail": "Detail",
+
+  "ui.error.history": "History could not be loaded.",
+
+  "severity.OK.word": "All good",
+  "severity.OK.icon": "●",
+  "severity.INFO.word": "Information",
+  "severity.INFO.icon": "ℹ",
+  "severity.ATTENTION.word": "Attention",
+  "severity.ATTENTION.icon": "⚠",
+  "severity.URGENT.word": "Urgent",
+  "severity.URGENT.icon": "✖",
+
+  "verdict.OK": "Your computer is in good shape.",
+  "verdict.INFO": "Everything works, with one thing worth knowing.",
+  "verdict.ATTENTION": "Something deserves your attention.",
+  "verdict.URGENT": "Action is needed soon.",
+
+  "finding.cpu.usage_high.title": "Your computer has been working hard for {sustain_minutes} minutes",
+  "finding.cpu.usage_high.why": "It has been using {usage_pct} % of its processing power for a while now. That is normal during heavy work, but if it lasts for no reason the computer may heat up and slow down.",
+
+  "finding.memory.pressure.title": "Memory is nearly full: only {available_bytes} left ({available_pct} % free)",
+  "finding.memory.pressure.why": "The computer has started moving data to the disk ({swap_used_bytes} so far), which is far slower than memory. Closing a few applications should make it responsive again.",
+
+  "finding.thermal.high.title": "Your computer has been running hot for a while ({temperature_c} °C)",
+  "finding.thermal.high.why": "The heat has lasted several minutes. If this happens often, the fan is probably clogged with dust: cleaning it extends the life of the machine.",
+
+  "finding.thermal.critical.title": "Your computer is very hot ({temperature_c} °C)",
+  "finding.thermal.critical.why": "At this temperature the machine throttles itself to avoid damage and may shut down on its own. Check that the air vents are not blocked and place the device on a hard surface.",
+
+  "finding.battery.wear.title": "The battery has lost {wear_pct} % of its original capacity",
+  "finding.battery.wear.why": "It therefore lasts less time than when new. This is normal battery ageing, but past half its capacity, replacing it becomes reasonable.",
+
+  "finding.battery.incoherent.title": "Battery readings cannot be trusted",
+  "finding.battery.incoherent.why": "This computer reports impossible battery figures, which is a known flaw in some manufacturers' firmware. Rather than show you a wrong number, we show none. The battery itself is probably fine."
+}

@@ -1,0 +1,97 @@
+{
+  "ui.title": "Console de santé",
+  "ui.mode.simple": "Simple",
+  "ui.mode.expert": "Expert",
+  "ui.mode.group": "Niveau de détail",
+  "ui.language": "Langue",
+  "ui.score.label": "Santé globale",
+  "ui.freshness.live": "À jour · dernière mesure à {time}",
+  "ui.freshness.stale": "Données figées depuis {time} · reconnexion…",
+  "ui.probe.unavailable": "Mesure indisponible : {probe}",
+  "ui.probe.unavailable.why": "Cette mesure n'a pas pu être effectuée pour le moment.",
+  "ui.probe.unavailable.raw_prefix": "Détail technique :",
+  "ui.state.no_measurement": "Aucune mesure pour l'instant",
+  "ui.state.no_measurement.detail": "La console n'a pas encore terminé sa première mesure. Cela ne devrait prendre que quelques secondes.",
+
+  "ui.theme.label": "Thème",
+  "ui.theme.auto": "Auto",
+  "ui.theme.light": "Clair",
+  "ui.theme.dark": "Sombre",
+
+  "ui.range.group": "Fenêtre de temps",
+  "ui.range.1h": "1 h",
+  "ui.range.24h": "24 h",
+  "ui.range.7d": "7 j",
+  "ui.range.90d": "90 j",
+  "ui.refresh": "Rafraîchir",
+
+  "ui.metric.cpu.usage": "Utilisation du processeur",
+  "ui.metric.load.1": "Charge sur 1 minute",
+  "ui.metric.cpu.temp.pkg": "Température du processeur",
+  "ui.metric.mem.available": "Mémoire disponible",
+  "ui.metric.mem.available_pct": "Mémoire libre",
+  "ui.metric.mem.swap.used": "Déplacé sur le disque",
+  "ui.metric.battery.charge_pct": "Charge de la batterie",
+  "ui.metric.battery.wear_pct": "Usure de la batterie",
+
+  "ui.metric.cpu.usage.hint": "À quel point le processeur est occupé en ce moment, en part de sa capacité totale. Elle monte normalement pendant un traitement lourd et redescend une fois celui-ci terminé.",
+  "ui.metric.cpu.temp.pkg.hint": "La température mesurée par le capteur du processeur lui-même. La console s'en inquiète dès qu'elle reste dans les 85 °C pendant quelques minutes, ou immédiatement si elle grimpe bien plus haut.",
+  "ui.metric.mem.available.hint": "La quantité de mémoire disponible immédiatement pour les programmes, sans qu'il soit nécessaire de fermer quoi que ce soit.",
+  "ui.metric.mem.swap.used.hint": "Des données que l'ordinateur a rangées sur le disque pour libérer de la mémoire. Une petite quantité est normale ; un chiffre élevé ou qui augmente traduit un manque de mémoire.",
+  "ui.metric.battery.charge_pct.hint": "Le niveau de charge actuel de la batterie, en part d'une charge complète : il baisse sur batterie et remonte pendant la charge.",
+  "ui.metric.load.1.hint": "Une moyenne récente et lissée du travail en cours, en attente de son tour sur le processeur, ou bloqué en attente du disque. Une valeur proche du nombre de cœurs du processeur signifie que la machine est occupée mais suit le rythme ; si elle est élevée alors que le processeur lui-même semble inactif, un disque lent ou défaillant en est souvent la cause.",
+
+  "ui.chart.group.cpu": "Processeur",
+  "ui.chart.group.thermal": "Température",
+  "ui.chart.group.memory": "Mémoire",
+  "ui.chart.group.battery": "Batterie",
+
+  "ui.chart.empty": "Rien d'enregistré sur cette fenêtre pour l'instant.",
+  "ui.chart.depth_short": "Seulement {days} jours d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
+  "ui.chart.depth_short_day": "Seulement {days} jour d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
+  "ui.chart.depth_short_hours": "Seulement {hours} heures d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
+  "ui.chart.depth_short_hour": "Seulement {hours} heure d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
+  "ui.chart.summary": "{metric} sur {range} : minimum {min}, maximum {max}, dernière valeur relevée {current}.",
+  "ui.chart.unavailable": "Les graphiques sont indisponibles : la bibliothèque de tracé ne s'est pas chargée. Toutes les valeurs ci-dessus restent à jour.",
+
+  "ui.expert.overview": "Valeurs actuelles",
+  "ui.expert.probes": "Sondes",
+  "ui.expert.raw": "Données brutes",
+  "ui.expert.probe_table.name": "Sonde",
+  "ui.expert.probe_table.status": "État",
+  "ui.expert.probe_table.detail": "Détail",
+
+  "ui.error.history": "L'historique n'a pas pu être chargé.",
+
+  "severity.OK.word": "Tout va bien",
+  "severity.OK.icon": "●",
+  "severity.INFO.word": "Information",
+  "severity.INFO.icon": "ℹ",
+  "severity.ATTENTION.word": "Attention",
+  "severity.ATTENTION.icon": "⚠",
+  "severity.URGENT.word": "Urgent",
+  "severity.URGENT.icon": "✖",
+
+  "verdict.OK": "Votre ordinateur se porte bien.",
+  "verdict.INFO": "Tout fonctionne, avec un point à connaître.",
+  "verdict.ATTENTION": "Quelque chose mérite votre attention.",
+  "verdict.URGENT": "Une action est nécessaire rapidement.",
+
+  "finding.cpu.usage_high.title": "Votre ordinateur travaille beaucoup depuis {sustain_minutes} minutes",
+  "finding.cpu.usage_high.why": "Il utilise {usage_pct} % de sa puissance de calcul depuis un moment. C'est normal pendant un traitement lourd, mais si cela dure sans raison, l'ordinateur risque de chauffer et de ralentir.",
+
+  "finding.memory.pressure.title": "La mémoire est presque pleine : il ne reste que {available_bytes} ({available_pct} % de libre)",
+  "finding.memory.pressure.why": "L'ordinateur a commencé à déplacer des données vers le disque ({swap_used_bytes} jusqu'à présent), bien plus lent que la mémoire. Fermer quelques applications devrait le rendre à nouveau réactif.",
+
+  "finding.thermal.high.title": "Votre ordinateur chauffe depuis un moment ({temperature_c} °C)",
+  "finding.thermal.high.why": "La chaleur dure depuis plusieurs minutes. Si cela se répète souvent, le ventilateur est probablement encrassé : un dépoussiérage rallonge la vie de la machine.",
+
+  "finding.thermal.critical.title": "Votre ordinateur est très chaud ({temperature_c} °C)",
+  "finding.thermal.critical.why": "À cette température, la machine se bride pour se protéger et peut s'éteindre seule. Vérifiez que les grilles d'aération ne sont pas obstruées et posez l'appareil sur une surface dure.",
+
+  "finding.battery.wear.title": "La batterie a perdu {wear_pct} % de sa capacité d'origine",
+  "finding.battery.wear.why": "Elle tient donc moins longtemps qu'à l'achat. C'est l'usure normale d'une batterie, mais au-delà de la moitié, son remplacement devient raisonnable.",
+
+  "finding.battery.incoherent.title": "Les mesures de la batterie ne sont pas fiables",
+  "finding.battery.incoherent.why": "Cet ordinateur rapporte des valeurs de batterie impossibles, un défaut connu du micrologiciel de certains fabricants. Plutôt que de vous montrer un chiffre faux, nous n'en montrons aucun. La batterie elle-même se porte probablement bien."
+}

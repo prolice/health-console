@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Health Console</title>
+  <script src="/static/js/theme-boot.js"></script>
   <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -69,7 +70,7 @@
         <h2 class="accordion-header">
           <button class="accordion-button collapsed" type="button"
                   data-bs-toggle="collapse" data-bs-target="#probe-panel"
-                  id="probes-heading"></button>
+                  id="probes-heading" aria-expanded="false" aria-controls="probe-panel"></button>
         </h2>
         <div id="probe-panel" class="accordion-collapse collapse"
              data-bs-parent="#expert-accordion">
@@ -80,7 +81,7 @@
         <h2 class="accordion-header">
           <button class="accordion-button collapsed" type="button"
                   data-bs-toggle="collapse" data-bs-target="#raw-panel"
-                  id="raw-heading"></button>
+                  id="raw-heading" aria-expanded="false" aria-controls="raw-panel"></button>
         </h2>
         <div id="raw-panel" class="accordion-collapse collapse"
              data-bs-parent="#expert-accordion">

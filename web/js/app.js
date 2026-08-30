@@ -82,10 +82,16 @@ async function start() {
     el(`theme-${id}`).addEventListener("click", () => applyTheme(id));
   }
   applyTheme(localStorage.getItem(THEME_KEY) || "auto");
-  // "auto" must follow the system while the page is open, not only at load.
+  // "auto" must follow the system while the page is open, not only at
+  // load -- but only when the reader has not pinned an explicit choice.
+  // Task 9 redraws every chart on whenThemeChanges, so an OS flip must not
+  // touch a theme the reader deliberately set to light or dark.
   globalThis.matchMedia("(prefers-color-scheme: dark)")
-    .addEventListener("change", () => applyTheme(
-      localStorage.getItem(THEME_KEY) || "auto"));
+    .addEventListener("change", () => {
+      if ((localStorage.getItem(THEME_KEY) || "auto") === "auto") {
+        applyTheme("auto");
+      }
+    });
   whenLocaleChanges(() => {
     paintChrome();
     const state = lastKnownState();

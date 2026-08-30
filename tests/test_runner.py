@@ -228,9 +228,15 @@ class TestOnEventExceptionMidOutputDoesNotOrphanTheChild(RunnerCase):
         pid = int(pid_file.read_text().strip())
 
         def force_kill():
+            # `pid` is the /bin/sh itself, not the `sleep` it spawned as
+            # a plain (non-backgrounded) child of the same process
+            # group. Killing only that one pid would leave `sleep`
+            # behind if the group kill this test is exercising ever
+            # regressed -- killpg is the cleanup that actually matches
+            # what this test is trying to confirm.
             try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
                 pass
 
         self.addCleanup(force_kill)
@@ -241,3 +247,92 @@ class TestOnEventExceptionMidOutputDoesNotOrphanTheChild(RunnerCase):
                 msg="the child outlived the run that was supposed to "
                     "have ended it"):
             os.kill(pid, 0)
+
+
+class TestStdoutCloseDoesNotBlockTheWorker(RunnerCase):
+    """Critical A: closing process.stdout while the reader thread is
+    still blocked inside a read on it blocks the closer too -- the exact
+    wedge Critical 2's fix was supposed to eliminate, reintroduced by the
+    fix itself. A descendant that escapes the process group (here, via
+    `setsid`) and still holds the pipe open must not be able to block
+    the worker thread's own finalisation, even though the direct child
+    it was actually running exits in milliseconds."""
+
+    def test_a_pipe_holding_escapee_does_not_block_the_worker(self):
+        pid_file = Path(self.dir.name) / "escapee_pid"
+        escapee = Action(
+            "t.escapee",
+            ("/bin/sh", "-c",
+             f"setsid sleep 600 & echo $! > {pid_file}; exit 0"),
+            root=False, risk=Risk.SAFE)
+        runner = ActionRunner(self.store, timeout_seconds=1)
+        runner.start(escapee, "127.0.0.1", self.events.append)
+
+        # The direct child (the shell) exits in milliseconds; only the
+        # detached `sleep 600` -- outside this runner's process group
+        # entirely -- keeps the pipe open. This must not be able to
+        # block the worker: bound the wait well under the escapee's own
+        # 600s lifetime so a regression here fails fast, not eventually.
+        runner.wait(9)
+
+        def cleanup():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGKILL)
+            except (FileNotFoundError, ValueError, ProcessLookupError):
+                pass
+
+        self.addCleanup(cleanup)
+
+        self.assertFalse(
+            runner.is_busy(),
+            "the worker is still busy 9s after a 1s timeout -- it is "
+            "most likely blocked inside stdout.close() waiting on an "
+            "escapee that still holds the pipe open")
+        self.assertEqual(len(self.store.read_action_runs()), 1)
+
+
+class TestExitCodeSurvivesALateCancel(RunnerCase):
+    """Important A: a cancel (or a timeout) that arrives after the
+    process has already exited on its own must not overwrite its real
+    exit code with None, nor claim in the output that a cancel or a
+    timeout was what ended the run."""
+
+    def test_a_cancel_after_the_process_already_exited_leaves_its_exit_code_alone(
+            self):
+        pid_file = Path(self.dir.name) / "escapee_pid2"
+        action = Action(
+            "t.late_exit",
+            ("/bin/sh", "-c",
+             f"setsid sleep 3 & echo $! > {pid_file}; exit 7"),
+            root=False, risk=Risk.SAFE)
+        runner = ActionRunner(self.store, timeout_seconds=30)
+        runner.start(action, "127.0.0.1", self.events.append)
+
+        # The shell exits (with code 7) in milliseconds; give it a
+        # moment to actually do so before "cancelling" a run that, by
+        # then, has nothing left to cancel. The detached `sleep 3` keeps
+        # the pipe open for a few more seconds regardless, so the run
+        # itself is not yet finalised when the cancel lands.
+        time.sleep(0.3)
+        runner.cancel()
+        runner.wait(15)
+
+        def cleanup():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGKILL)
+            except (FileNotFoundError, ValueError, ProcessLookupError):
+                pass
+
+        self.addCleanup(cleanup)
+
+        row = self.store.read_action_runs()[0]
+        self.assertEqual(
+            row["exit_code"], 7,
+            "a cancel() arriving after the process had already exited "
+            "must not erase its real exit code")
+        self.assertNotIn(
+            "cancel", row["output"],
+            "the output must not claim a cancel ended a run that had "
+            "already exited on its own")

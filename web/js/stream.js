@@ -71,7 +71,13 @@ export function markFreshness(stale) {
     stale ? "ui.freshness.stale" : "ui.freshness.live", { time }));
 }
 
-export function connect({ onState, onFreshness }) {
+// onAction is optional -- most callers have nothing to do with actions, and
+// a listener with no handler behind it would be a dead one. `action` rides
+// this same connection rather than a stream of its own: each EventSource
+// holds a server thread for its life (MAX_STREAMS in server.py), and this
+// console is routinely open on more than one device at once. actions.js
+// owns everything about what an event means; this only forwards it parsed.
+export function connect({ onState, onFreshness, onAction }) {
   const source = new EventSource("/api/stream");
   source.addEventListener("state", (event) => {
     lastUpdate = Date.now();
@@ -82,6 +88,9 @@ export function connect({ onState, onFreshness }) {
     isStale = true;
     onFreshness(true);
   });
+  if (onAction) {
+    source.addEventListener("action", (event) => onAction(JSON.parse(event.data)));
+  }
   setInterval(() => {
     if (Date.now() - lastUpdate > STALE_AFTER_MS) {
       isStale = true;

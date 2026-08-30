@@ -196,14 +196,9 @@ async function start() {
     el("freshness").textContent =
       "Interface text failed to load. Please reload the page.";
   }
-  connect({ onState: render, onFreshness: markFreshness });
-  // A second connection to the same route rather than a new event type on
-  // stream.js's: that module already demultiplexes and buffers "state"
-  // events for the freshness banner, and the server multiplexes "state"
-  // and "action" onto one /api/stream route regardless of how many times a
-  // browser connects to it -- so this need not touch stream.js at all.
-  new EventSource("/api/stream").addEventListener("action",
-    (event) => onActionEvent(JSON.parse(event.data)));
+  // onAction rides the same connection as onState/onFreshness -- one
+  // EventSource for the whole page, never two (see stream.js's connect()).
+  connect({ onState: render, onFreshness: markFreshness, onAction: onActionEvent });
 }
 
 globalThis.healthConsole = { translate, render, setLocale, formatBytes };

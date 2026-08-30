@@ -1,3 +1,4 @@
+import inspect
 import json
 import socket
 import sqlite3
@@ -10,11 +11,13 @@ from pathlib import Path
 from unittest import mock
 
 from healthconsole.actions import Action, Risk
+from healthconsole.cli import cmd_run
 from healthconsole.config import Config
 from healthconsole.ring import Ring
 from healthconsole.runner import ActionRunner
 from healthconsole.scheduler import Scheduler
 from healthconsole.server import (
+    ACTION_EVENT_QUEUE_MAX, ACTION_INTENT_HEADER, ACTION_INTENT_VALUE,
     authorise, cookie_token, generate_token, is_loopback, make_server,
     session_cookie_header,
 )
@@ -532,6 +535,7 @@ class TestActionPost(ServerCase):
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", method="POST")
         request.add_header("X-Health-Token", self.cfg.token)
+        request.add_header(ACTION_INTENT_HEADER, ACTION_INTENT_VALUE)
         # Real sockets in this suite all connect over 127.0.0.1; a
         # non-loopback client is simulated the same way TestLanCookieHandoff
         # does it above, by patching is_loopback for the request rather than
@@ -584,6 +588,293 @@ class TestActionPost(ServerCase):
         # A route that acts must not be reachable by a link, a prefetch or
         # a crawler.
         self.assertEqual(self.get_status("/api/actions/t.true"), 404)
+
+    # --- byte-exact replay -------------------------------------------
+    #
+    # urllib cannot emit what a browser emits for a cross-origin form
+    # (it normalises headers and refuses to pipeline), and the request
+    # smuggling below is a property of the exact bytes on the wire, so
+    # these go out over a raw socket.
+
+    def raw(self, payload: bytes, settle: float = 1.0) -> bytes:
+        """Send exact bytes on one connection; read until close or silence."""
+        self._ensure_server()
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(payload)
+            sock.settimeout(settle)
+            chunks = []
+            while True:
+                try:
+                    piece = sock.recv(65536)
+                except OSError:          # includes socket.timeout
+                    break
+                if not piece:
+                    break
+                chunks.append(piece)
+            return b"".join(chunks)
+        finally:
+            sock.close()
+
+    def _cross_origin_form(self, action_id: str, extra: str = "") -> bytes:
+        # Byte-for-byte what a browser sends for an auto-submitted
+        # cross-origin <form method=POST>: an Origin it does not control,
+        # Sec-Fetch-Site: cross-site, a form content type, and no token --
+        # loopback needs none.
+        return (
+            f"POST /api/actions/{action_id} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            "Origin: http://evil.example\r\n"
+            "Sec-Fetch-Site: cross-site\r\n"
+            "Sec-Fetch-Mode: navigate\r\n"
+            "Content-Type: application/x-www-form-urlencoded\r\n"
+            f"{extra}"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            "\r\n").encode("ascii")
+
+    def _same_origin_post(self, action_id: str, extra: str = "") -> bytes:
+        return (
+            f"POST /api/actions/{action_id} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"X-Health-Token: {self.cfg.token}\r\n"
+            f"{ACTION_INTENT_HEADER}: {ACTION_INTENT_VALUE}\r\n"
+            "Sec-Fetch-Site: same-origin\r\n"
+            f"{extra}"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            "\r\n").encode("ascii")
+
+    # --- CSRF: any page the operator visits must not be able to act ---
+
+    def test_a_cross_origin_form_post_cannot_run_an_action(self):
+        # The console runs on loopback, so authorise() waves the request
+        # through without a token and SameSite has nothing to bite on:
+        # a cross-origin form is a bare POST with no credentials at all.
+        # The only thing that distinguishes it from the console's own
+        # request is a header a form cannot set.
+        self._ensure_server()
+        with mock.patch.object(self.runner, "start",
+                               wraps=self.runner.start) as start:
+            reply = self.raw(self._cross_origin_form("t.true"))
+        self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply[:120])
+        self.assertIn(b"action_intent_required", reply)
+        start.assert_not_called()
+
+    def test_a_post_without_the_intent_header_is_refused(self):
+        # Same-origin-shaped in every other way: it is the missing header
+        # alone that refuses it, because that is the one signal no
+        # cross-origin form and no preflight-free fetch can forge.
+        self._ensure_server()
+        payload = (
+            f"POST /api/actions/t.true HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"X-Health-Token: {self.cfg.token}\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n").encode("ascii")
+        with mock.patch.object(self.runner, "start",
+                               wraps=self.runner.start) as start:
+            reply = self.raw(payload)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply[:120])
+        start.assert_not_called()
+
+    def test_a_cross_site_fetch_is_refused_even_carrying_the_header(self):
+        # Belt and braces for the second gate on its own: if some client
+        # ever reaches this route with the intent header set but the
+        # browser still labelling the request cross-site, refuse it.
+        self._ensure_server()
+        with mock.patch.object(self.runner, "start",
+                               wraps=self.runner.start) as start:
+            reply = self.raw(self._cross_origin_form(
+                "t.true",
+                extra=f"{ACTION_INTENT_HEADER}: {ACTION_INTENT_VALUE}\r\n"))
+        self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply[:120])
+        self.assertIn(b"cross_site_refused", reply)
+        start.assert_not_called()
+
+    def test_the_consoles_own_same_origin_post_still_runs(self):
+        # A fix that refuses the console's own UI is not a fix.
+        self._ensure_server()
+        reply = self.raw(self._same_origin_post("t.true"))
+        self.assertTrue(reply.startswith(b"HTTP/1.1 202"), reply[:120])
+
+    def test_a_post_with_no_sec_fetch_site_at_all_still_runs(self):
+        # curl, and any non-browser client, sends no Sec-Fetch-* headers.
+        # The second gate must only fire when the header is present and
+        # says cross-site -- never on its absence, or it locks out every
+        # client that is not a browser.
+        self._ensure_server()
+        payload = (
+            f"POST /api/actions/t.true HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"X-Health-Token: {self.cfg.token}\r\n"
+            f"{ACTION_INTENT_HEADER}: {ACTION_INTENT_VALUE}\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n").encode("ascii")
+        reply = self.raw(payload)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 202"), reply[:120])
+
+    # --- the shutdown guard -------------------------------------------
+
+    def test_a_post_after_shutdown_is_refused_and_starts_nothing(self):
+        # cmd_run's finally block closes the listening socket, sets this
+        # flag, shuts the runner down and closes the store. A keep-alive
+        # connection a browser opened earlier can still deliver a request
+        # into that window: without the guard it spawns a child nothing
+        # will reap, whose audit write lands on a closed database. With
+        # the real catalogue that orphan is apt-get running as root past
+        # the console's own exit.
+        self._ensure_server()
+        self.server.shutdown_event.set()
+        with mock.patch.object(self.runner, "start",
+                               wraps=self.runner.start) as start:
+            status, body = self.post("/api/actions/t.true")
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"], "shutting_down")
+        start.assert_not_called()
+
+    # --- the request body ---------------------------------------------
+
+    def test_a_body_is_not_left_in_the_socket_to_be_read_as_a_request(self):
+        # do_POST reads no body, so Content-Length bytes left unread are
+        # parsed as the next request line on a keep-alive connection. A
+        # cross-origin <form enctype="text/plain"> controls those bytes
+        # exactly, which turns one CSRF POST into two chosen actions.
+        self._ensure_server()
+        smuggled = (
+            f"POST /api/actions/t.true HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"X-Health-Token: {self.cfg.token}\r\n"
+            f"{ACTION_INTENT_HEADER}: {ACTION_INTENT_VALUE}\r\n"
+            "Content-Length: 0\r\n\r\n").encode("ascii")
+        payload = (
+            f"POST /api/actions/nope HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"X-Health-Token: {self.cfg.token}\r\n"
+            f"{ACTION_INTENT_HEADER}: {ACTION_INTENT_VALUE}\r\n"
+            "Content-Type: text/plain\r\n"
+            f"Content-Length: {len(smuggled)}\r\n"
+            "\r\n").encode("ascii") + smuggled
+        with mock.patch.object(self.runner, "start",
+                               wraps=self.runner.start) as start:
+            reply = self.raw(payload)
+        self.assertNotIn(b"HTTP/1.1 202", reply)
+        start.assert_not_called()
+
+    def test_a_non_empty_body_is_refused_rather_than_ignored(self):
+        self._ensure_server()
+        payload = (
+            f"POST /api/actions/t.true HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"X-Health-Token: {self.cfg.token}\r\n"
+            f"{ACTION_INTENT_HEADER}: {ACTION_INTENT_VALUE}\r\n"
+            "Content-Length: 5\r\nConnection: close\r\n\r\nhello").encode("ascii")
+        with mock.patch.object(self.runner, "start",
+                               wraps=self.runner.start) as start:
+            reply = self.raw(payload)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 400"), reply[:120])
+        self.assertIn(b"body_refused", reply)
+        start.assert_not_called()
+
+    # --- the relay queue ------------------------------------------------
+
+    def test_the_relay_never_drops_started_or_finished(self):
+        # deque(maxlen=) evicts from the left regardless of what the entry
+        # is, so a chatty run pushes its own "started" out and a second run
+        # inside one tick can vanish from the stream entirely -- exactly
+        # the loss ActionRunner._drop_one_locked was written to prevent.
+        # Mirror its policy: only "output" is ever evicted.
+        self._ensure_server()
+        self.server.broadcast_action({"run_id": "r1", "phase": "started"})
+        for index in range(ACTION_EVENT_QUEUE_MAX * 3):
+            self.server.broadcast_action(
+                {"run_id": "r1", "phase": "output", "line": str(index)})
+        self.server.broadcast_action({"run_id": "r1", "phase": "finished"})
+        phases = [event["phase"] for _, event in self.server.action_events]
+        self.assertIn("started", phases)
+        self.assertIn("finished", phases)
+        self.assertLessEqual(len(self.server.action_events),
+                             ACTION_EVENT_QUEUE_MAX)
+        # And the client is told a gap happened rather than silently
+        # served a stream with holes in it.
+        self.assertGreater(self.server.action_relay_dropped[0], 0)
+
+    def test_the_relay_keeps_both_runs_when_two_run_inside_one_tick(self):
+        self._ensure_server()
+        for run in ("r1", "r2"):
+            self.server.broadcast_action({"run_id": run, "phase": "started"})
+            for index in range(300):
+                self.server.broadcast_action(
+                    {"run_id": run, "phase": "output", "line": str(index)})
+            self.server.broadcast_action({"run_id": run, "phase": "finished"})
+        seen = {(event["run_id"], event["phase"])
+                for _, event in self.server.action_events}
+        for run in ("r1", "r2"):
+            self.assertIn((run, "started"), seen)
+            self.assertIn((run, "finished"), seen)
+
+    # --- minors ---------------------------------------------------------
+
+    def test_the_catalogue_route_lists_the_injected_catalogue(self):
+        # Both routes must agree on which catalogue this server serves,
+        # or a test catalogue lists apt.refresh on GET and refuses it on
+        # POST.
+        listed = {entry["id"] for entry in self.get_json("/api/actions")}
+        self.assertEqual(listed, set(self.TEST_CATALOGUE))
+
+    def test_an_unexpected_runner_failure_is_a_code_shaped_500(self):
+        self._ensure_server()
+        with mock.patch.object(self.runner, "start",
+                               side_effect=RuntimeError("boom")):
+            status, body = self.post("/api/actions/t.true")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error"], "action_failed")
+
+    def test_a_refusal_still_hands_off_the_session_cookie(self):
+        # A LAN client that authenticated with ?k= gets its cookie on the
+        # 202 but not on any refusal, so the next request falls back to
+        # the query string it was supposed to stop using.
+        self._ensure_server()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/actions/t.true"
+            f"?k={self.cfg.token}", method="POST")
+        request.add_header(ACTION_INTENT_HEADER, ACTION_INTENT_VALUE)
+        with mock.patch("healthconsole.server.is_loopback",
+                        return_value=False):
+            try:
+                response = urllib.request.urlopen(request, timeout=5)
+                headers = response.headers
+            except urllib.error.HTTPError as exc:
+                headers = exc.headers
+        self.assertIn("Set-Cookie", headers)
+
+    def test_the_default_catalogue_cannot_be_mutated_through_the_seam(self):
+        signature = inspect.signature(make_server)
+        default = signature.parameters["catalogue"].default
+        with self.assertRaises(TypeError):
+            default["t.evil"] = None
+
+class TestCmdRunShutdownOrdering(unittest.TestCase):
+    """cmd_run's finally block -- the other half of the contract the
+    server's shutdown_event guard depends on. It lives beside that guard
+    rather than in test_cli.py because neither half means anything alone.
+    """
+
+    def test_the_store_is_closed_even_if_the_runner_shutdown_raises(self):
+        # shutdown() cancels a run in flight and can raise (a child that
+        # will not die, an OS error signalling it). The store must still
+        # be closed: leaking the handle over a failure in the very step
+        # that exists to make closing safe is the wrong trade.
+        store, scheduler, server, runner = (mock.Mock() for _ in range(4))
+        server.shutdown_event = threading.Event()
+        runner.shutdown.side_effect = RuntimeError("a child that will not die")
+        with mock.patch("healthconsole.cli._open",
+                        return_value=(store, scheduler)), \
+             mock.patch("healthconsole.cli.ActionRunner",
+                        return_value=runner), \
+             mock.patch("healthconsole.cli.make_server", return_value=server):
+            with self.assertRaises(RuntimeError):
+                cmd_run(Config(bind="127.0.0.1", port=0))
+        runner.shutdown.assert_called_once()
+        store.close.assert_called_once()
 
 
 if __name__ == "__main__":

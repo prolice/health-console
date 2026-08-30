@@ -403,8 +403,16 @@ def cmd_run(cfg) -> int:
         # docstring -- which is why this happens after the listening
         # socket and the collection thread are already stopped, not
         # concurrently with them.
-        runner.shutdown()
-        store.close()
+        try:
+            runner.shutdown()
+        finally:
+            # In a finally of its own: shutdown() cancels a run in flight
+            # and can raise (a child that will not die, an OS error on
+            # signalling it). If it did, the store would never be closed
+            # -- leaking the handle and leaving the database's WAL
+            # unfinalised -- over a failure in the step whose whole job
+            # was to make closing safe.
+            store.close()
     return 0
 
 

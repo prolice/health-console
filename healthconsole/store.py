@@ -201,6 +201,33 @@ class Store:
                     (metric,)).fetchone()
             return None if row[0] is None else int(row[0])
 
+    def write_action_run(self, run_id: str, ts: int, action_id: str,
+                         source: str, exit_code: int | None,
+                         duration_ms: int, output: str) -> None:
+        # exit_code is None for a run that was killed: a timeout has no
+        # exit status of its own, and recording 0 would make it read as a
+        # success in the one place someone looks to find out what happened.
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO action_run"
+                "(id, ts, action_id, source, exit_code, duration_ms, output) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (run_id, ts, action_id, source, exit_code, duration_ms, output))
+            self.conn.commit()
+
+    def read_action_runs(self, limit: int = 50) -> list[dict]:
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT id, ts, action_id, source, exit_code, duration_ms, "
+                "output FROM action_run ORDER BY ts DESC, rowid DESC LIMIT ?",
+                (limit,))
+            rows = cursor.fetchall()
+        return [{"id": row[0], "ts": int(row[1]), "action_id": row[2],
+                 "source": row[3],
+                 "exit_code": None if row[4] is None else int(row[4]),
+                 "duration_ms": int(row[5]), "output": row[6]}
+                for row in rows]
+
     def db_bytes(self) -> int:
         if self.path == ":memory:":
             with self._lock:

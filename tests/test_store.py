@@ -252,5 +252,45 @@ class TestConcurrentAccess(unittest.TestCase):
                       f"under concurrent access: {errors!r}")
 
 
+class TestActionAudit(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.store = Store(os.path.join(self.dir.name, "db.sqlite3"))
+        self.addCleanup(self.store.close)
+
+    def test_a_run_is_written_and_read_back_whole(self):
+        self.store.write_action_run(
+            "r1", 1000, "apt.refresh", "127.0.0.1", 0, 2140, "Hit:1 …\nDone\n")
+        rows = self.store.read_action_runs()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], "r1")
+        self.assertEqual(rows[0]["action_id"], "apt.refresh")
+        self.assertEqual(rows[0]["exit_code"], 0)
+        self.assertEqual(rows[0]["duration_ms"], 2140)
+        self.assertIn("Done", rows[0]["output"])
+
+    def test_a_timed_out_run_records_a_null_exit_code(self):
+        # A killed process has no exit code of its own. Storing 0 would
+        # make a timeout indistinguishable from a success in the log --
+        # the one place a reader looks to find out what happened.
+        self.store.write_action_run(
+            "r2", 1001, "apt.refresh", "127.0.0.1", None, 1_800_000, "")
+        self.assertIsNone(self.store.read_action_runs()[0]["exit_code"])
+
+    def test_runs_come_back_newest_first(self):
+        for index, ts in enumerate((1000, 3000, 2000)):
+            self.store.write_action_run(
+                f"r{index}", ts, "apt.refresh", "127.0.0.1", 0, 1, "")
+        self.assertEqual([row["ts"] for row in self.store.read_action_runs()],
+                         [3000, 2000, 1000])
+
+    def test_the_limit_is_honoured(self):
+        for index in range(5):
+            self.store.write_action_run(
+                f"r{index}", 1000 + index, "apt.refresh", "127.0.0.1", 0, 1, "")
+        self.assertEqual(len(self.store.read_action_runs(limit=2)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

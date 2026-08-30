@@ -11,6 +11,7 @@ import hmac
 import ipaddress
 import json
 import secrets
+import sqlite3
 import threading
 import time
 from http import cookies
@@ -121,6 +122,21 @@ def session_cookie_header(token: str) -> str:
 
 def make_server(cfg: Config, scheduler,
                 web_dir: Path = WEB_DIR) -> ThreadingHTTPServer:
+
+    # cmd_run's shutdown sequence closes the listening socket
+    # (server.server_close()) and only then closes the store -- but
+    # server_close() does not wait for request threads already in flight,
+    # and daemon_threads=True means nothing else will either (the /api/stream
+    # handler loops forever by design, so joining it would hang shutdown).
+    # Set by cmd_run just before it closes the store, this flag lets a
+    # request that starts in that window (an existing keep-alive connection
+    # can still send one after the listening socket is gone) fail fast with
+    # a 503 instead of reaching the store at all. It cannot wedge a normal
+    # request: checking it never blocks, and it is only ever set once, at
+    # shutdown. A request already past this check when the store closes is
+    # covered separately -- see the try/except around the store calls in
+    # _history below.
+    shutdown_event = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -236,13 +252,29 @@ def make_server(cfg: Config, scheduler,
             if window not in RANGES:
                 return self._error(400, "unknown_range",
                                    ", ".join(RANGES))
+            if shutdown_event.is_set():
+                return self._error(503, "shutting_down", "")
             now = int(time.time())
             since = now - RANGES[window]
             table = ("metric" if RANGES[window] <= RAW_TABLE_MAX_SECONDS
                      else "metric_5m")
-            points = scheduler.store.read_series(metric, since, now, table=table)
-            depth = scheduler.store.available_depth_seconds(
-                table, now, metric=metric)
+            try:
+                points = scheduler.store.read_series(metric, since, now,
+                                                     table=table)
+                depth = scheduler.store.available_depth_seconds(
+                    table, now, metric=metric)
+            except sqlite3.Error as exc:
+                # Primarily the narrow shutdown race described above -- a
+                # request thread already inside the store when cmd_run's
+                # finally block closes it out from under this one -- but
+                # any other sqlite3 failure (a locked or corrupt database)
+                # deserves the same treatment: a diagnostic tool must not
+                # crash a request thread over its own storage acting up.
+                # web/js/history.js turns any non-OK response into a
+                # HistoryError, which the front end renders as
+                # ui.error.history -- nothing more is needed client-side.
+                return self._error(503, "store_unavailable",
+                                   type(exc).__name__)
             return self._json(200, {
                 "metric": metric, "range": window, "table": table,
                 "points": [[ts, value] for ts, value in points],
@@ -324,4 +356,7 @@ def make_server(cfg: Config, scheduler,
 
     server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)
     server.daemon_threads = True
+    # cmd_run sets this just before closing the store -- see the comment
+    # above shutdown_event's definition.
+    server.shutdown_event = shutdown_event
     return server

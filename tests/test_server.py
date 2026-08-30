@@ -1,5 +1,6 @@
 import json
 import socket
+import sqlite3
 import threading
 import unittest
 import urllib.error
@@ -188,6 +189,67 @@ class TestHttp(unittest.TestCase):
         self.assertIn(b"200", status_line)
         self.assertIn(b"Content-Length", headers)
         self.assertEqual(body, b"")
+
+
+class TestHistoryEndpoint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.store = Store(":memory:")
+        cls.scheduler = Scheduler(Config(), cls.store, Ring())
+        cls.scheduler.tick(now=1000.0)
+        cls.server = make_server(Config(bind="127.0.0.1", port=0),
+                                 cls.scheduler, WEB_DIR)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.store.close()
+
+    def tearDown(self):
+        self.server.shutdown_event.clear()
+
+    def get(self, path):
+        return urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}{path}", timeout=5)
+
+    def test_history_returns_points_and_depth(self):
+        payload = json.loads(
+            self.get("/api/history?metric=cpu.usage&range=24h").read())
+        self.assertIn("points", payload)
+        self.assertIn("depth_days", payload)
+
+    def test_store_error_during_history_is_a_503_not_a_crash(self):
+        # Regression test for the shutdown race described in
+        # healthconsole/server.py: a request thread already inside
+        # store.read_series when cmd_run's finally block closes the store
+        # used to let sqlite3.InterfaceError escape do_GET and print a
+        # traceback to the terminal. _history must turn any sqlite3.Error
+        # into a machine-readable 503 instead of letting it propagate.
+        with mock.patch.object(
+                self.store, "read_series",
+                side_effect=sqlite3.InterfaceError("bad parameter or other API misuse")):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get("/api/history?metric=cpu.usage&range=24h")
+            self.assertEqual(ctx.exception.code, 503)
+            payload = json.loads(ctx.exception.read())
+            self.assertEqual(payload["error"], "store_unavailable")
+            self.assertNotIn(" ", payload["detail"])
+
+    def test_shutdown_flag_short_circuits_before_touching_the_store(self):
+        # Set by cmd_run just before it closes the store -- a request that
+        # starts after that point must never reach the store at all.
+        self.server.shutdown_event.set()
+        with mock.patch.object(
+                self.store, "read_series",
+                side_effect=AssertionError("the store must not be touched")):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get("/api/history?metric=cpu.usage&range=24h")
+            self.assertEqual(ctx.exception.code, 503)
+            payload = json.loads(ctx.exception.read())
+            self.assertEqual(payload["error"], "shutting_down")
 
 
 class TestCookieTokenParsing(unittest.TestCase):

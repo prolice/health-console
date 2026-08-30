@@ -258,6 +258,14 @@ def cmd_run(cfg) -> int:
     finally:
         stop.set()
         server.server_close()
+        # Told before the store is: server_close() only stops the listening
+        # socket, it does not wait for request threads already in flight,
+        # and daemon_threads=True means nothing below joins them either (the
+        # /api/stream handler loops forever by design). Setting this first
+        # closes the window for any *new* request on a still-open keep-alive
+        # connection; a request already inside the store when it closes is
+        # covered separately, by the try/except in server.py's _history.
+        server.shutdown_event.set()
         thread.join(timeout=5)
         store.close()
     return 0

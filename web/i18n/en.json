@@ -10,9 +10,46 @@
   "ui.probe.unavailable": "Measurement unavailable: {probe}",
   "ui.probe.unavailable.why": "This measurement could not be taken right now.",
   "ui.probe.unavailable.raw_prefix": "Technical detail:",
-  "ui.expert.placeholder": "Expert mode arrives in plan 2.",
   "ui.state.no_measurement": "No measurement yet",
   "ui.state.no_measurement.detail": "The console has not completed its first measurement yet. This should only take a few seconds.",
+
+  "ui.theme.label": "Theme",
+  "ui.theme.auto": "Auto",
+  "ui.theme.light": "Light",
+  "ui.theme.dark": "Dark",
+
+  "ui.range.group": "Time window",
+  "ui.range.1h": "1 h",
+  "ui.range.24h": "24 h",
+  "ui.range.7d": "7 d",
+  "ui.range.90d": "90 d",
+  "ui.refresh": "Refresh",
+
+  "ui.metric.cpu.usage": "Processor use",
+  "ui.metric.load.1": "Load, 1 minute",
+  "ui.metric.cpu.temp.pkg": "Processor temperature",
+  "ui.metric.mem.available": "Memory available",
+  "ui.metric.mem.available_pct": "Memory free",
+  "ui.metric.mem.swap.used": "Moved to disk",
+  "ui.metric.battery.charge_pct": "Battery charge",
+  "ui.metric.battery.wear_pct": "Battery wear",
+
+  "ui.chart.group.cpu": "Processor",
+  "ui.chart.group.thermal": "Temperature",
+  "ui.chart.group.memory": "Memory",
+  "ui.chart.group.battery": "Battery",
+
+  "ui.chart.empty": "Nothing recorded over this window yet.",
+  "ui.chart.depth": "History available: {days} days.",
+  "ui.chart.depth_short": "Only {days} days of history so far. Collection began recently — this is not a fault.",
+  "ui.chart.summary": "{metric} over {range}: minimum {min}, maximum {max}, currently {current}.",
+  "ui.chart.unavailable": "Charts are unavailable: the drawing library did not load. Every reading above is still current.",
+
+  "ui.expert.overview": "Current readings",
+  "ui.expert.probes": "Probes",
+  "ui.expert.raw": "Raw data",
+
+  "ui.error.history": "History could not be loaded.",
 
   "severity.OK.word": "All good",
   "severity.OK.icon": "●",

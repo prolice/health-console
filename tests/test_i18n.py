@@ -21,9 +21,28 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.probe.unavailable",
     "ui.probe.unavailable.why",
     "ui.probe.unavailable.raw_prefix",
-    "ui.expert.placeholder",
     "ui.state.no_measurement",
     "ui.state.no_measurement.detail",
+    # Theme control
+    "ui.theme.label", "ui.theme.auto", "ui.theme.light", "ui.theme.dark",
+    # Range control
+    "ui.range.group", "ui.range.1h", "ui.range.24h", "ui.range.7d",
+    "ui.range.90d", "ui.refresh",
+    # Metric labels
+    "ui.metric.cpu.usage", "ui.metric.load.1", "ui.metric.cpu.temp.pkg",
+    "ui.metric.mem.available", "ui.metric.mem.available_pct",
+    "ui.metric.mem.swap.used", "ui.metric.battery.charge_pct",
+    "ui.metric.battery.wear_pct",
+    # Chart card groups
+    "ui.chart.group.cpu", "ui.chart.group.thermal",
+    "ui.chart.group.memory", "ui.chart.group.battery",
+    # Chart states
+    "ui.chart.empty", "ui.chart.depth", "ui.chart.depth_short",
+    "ui.chart.summary", "ui.chart.unavailable",
+    # Expert sections
+    "ui.expert.overview", "ui.expert.probes", "ui.expert.raw",
+    # Errors
+    "ui.error.history",
 })
 
 

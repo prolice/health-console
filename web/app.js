@@ -157,7 +157,6 @@ function paintChrome() {
   el("mode-group").setAttribute("aria-label", translate("ui.mode.group"));
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
-  el("expert-placeholder").textContent = translate("ui.expert.placeholder");
 }
 
 function card(severity, titleText, whyText) {

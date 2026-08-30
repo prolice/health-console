@@ -10,9 +10,46 @@
   "ui.probe.unavailable": "Mesure indisponible : {probe}",
   "ui.probe.unavailable.why": "Cette mesure n'a pas pu être effectuée pour le moment.",
   "ui.probe.unavailable.raw_prefix": "Détail technique :",
-  "ui.expert.placeholder": "Le mode Expert arrive au plan 2.",
   "ui.state.no_measurement": "Aucune mesure pour l'instant",
   "ui.state.no_measurement.detail": "La console n'a pas encore terminé sa première mesure. Cela ne devrait prendre que quelques secondes.",
+
+  "ui.theme.label": "Thème",
+  "ui.theme.auto": "Auto",
+  "ui.theme.light": "Clair",
+  "ui.theme.dark": "Sombre",
+
+  "ui.range.group": "Fenêtre de temps",
+  "ui.range.1h": "1 h",
+  "ui.range.24h": "24 h",
+  "ui.range.7d": "7 j",
+  "ui.range.90d": "90 j",
+  "ui.refresh": "Rafraîchir",
+
+  "ui.metric.cpu.usage": "Utilisation du processeur",
+  "ui.metric.load.1": "Charge sur 1 minute",
+  "ui.metric.cpu.temp.pkg": "Température du processeur",
+  "ui.metric.mem.available": "Mémoire disponible",
+  "ui.metric.mem.available_pct": "Mémoire libre",
+  "ui.metric.mem.swap.used": "Déplacé sur le disque",
+  "ui.metric.battery.charge_pct": "Charge de la batterie",
+  "ui.metric.battery.wear_pct": "Usure de la batterie",
+
+  "ui.chart.group.cpu": "Processeur",
+  "ui.chart.group.thermal": "Température",
+  "ui.chart.group.memory": "Mémoire",
+  "ui.chart.group.battery": "Batterie",
+
+  "ui.chart.empty": "Rien d'enregistré sur cette fenêtre pour l'instant.",
+  "ui.chart.depth": "Historique disponible : {days} jours.",
+  "ui.chart.depth_short": "Seulement {days} jours d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
+  "ui.chart.summary": "{metric} sur {range} : minimum {min}, maximum {max}, actuellement {current}.",
+  "ui.chart.unavailable": "Les graphiques sont indisponibles : la librairie de tracé ne s'est pas chargée. Toutes les valeurs ci-dessus restent à jour.",
+
+  "ui.expert.overview": "Valeurs actuelles",
+  "ui.expert.probes": "Sondes",
+  "ui.expert.raw": "Données brutes",
+
+  "ui.error.history": "L'historique n'a pas pu être chargé.",
 
   "severity.OK.word": "Tout va bien",
   "severity.OK.icon": "●",

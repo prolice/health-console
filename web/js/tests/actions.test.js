@@ -1,8 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 import { errorKeyForStatus, outcomeKey, shouldTrackEvent, reconcileRun,
-         isRunDisabled, renderActionRows, renderAuditRows } from "../actions.js";
+         isRunDisabled, renderActionRows, renderAuditRows, renderActions,
+         renderAuditTable } from "../actions.js";
+import { loadFallback, translate } from "../i18n.js";
+
+// The real English catalogue, read directly rather than re-typed here --
+// the two new tests below assert against actual translate() output, not
+// against literal strings that could drift from web/i18n/en.json.
+const CATALOGUE = JSON.parse(readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "i18n", "en.json"),
+  "utf-8"));
 
 // A minimal stand-in for the DOM, just enough for the two exported row
 // builders (the only functions here that touch document.createElement /
@@ -37,6 +49,41 @@ function withFakeDocument(elementsById, run) {
   } finally {
     if (previousDocument === undefined) delete globalThis.document;
     else globalThis.document = previousDocument;
+  }
+}
+
+// renderActions()/renderAuditTable() are async and also reach for fetch()
+// and (through authHeaders()) localStorage, neither of which exists in the
+// Node test runner -- stubbed for the duration of the callback and always
+// awaited before restoring, unlike withFakeDocument() above, so a rejected
+// fetch has actually been handled before the fake document is torn down.
+// The i18n catalogue fetch is always answered with the real English
+// catalogue regardless of what `primaryFetchImpl` does, so translate()
+// inside actions.js returns real wording -- otherwise every key would
+// resolve to "" and a test could not tell one notice from another.
+async function withStubbedEnvironment(elementsById, primaryFetchImpl, run) {
+  const previousDocument = globalThis.document;
+  const hadFetch = "fetch" in globalThis;
+  const previousFetch = globalThis.fetch;
+  const hadLocalStorage = "localStorage" in globalThis;
+  const previousLocalStorage = globalThis.localStorage;
+  globalThis.document = {
+    createElement: (tag) => new FakeElement(tag),
+    getElementById: (id) => elementsById[id],
+  };
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+  globalThis.fetch = (url, options) => String(url).includes("/static/i18n/")
+    ? Promise.resolve({ ok: true, status: 200, json: async () => CATALOGUE })
+    : primaryFetchImpl(url, options);
+  try {
+    await loadFallback();
+    await run();
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (hadFetch) globalThis.fetch = previousFetch; else delete globalThis.fetch;
+    if (hadLocalStorage) globalThis.localStorage = previousLocalStorage;
+    else delete globalThis.localStorage;
   }
 }
 
@@ -159,4 +206,36 @@ test("renderAuditRows shows the empty state rather than an empty table", () => {
   const [, body] = table.children;
   assert.equal(body.children.length, 1);
   assert.equal(body.children[0].children[0].colSpan, 4);
+});
+
+test("renderActions renders a failure notice rather than leaving the panel blank", async () => {
+  // Item 1: an auth hiccup, a brief restart, a network blip must not leave
+  // #action-list exactly as it was found -- on first load, empty, with no
+  // button and no visible way to retry short of leaving the tab.
+  const list = new FakeElement("div");
+  await withStubbedEnvironment({ "action-list": list },
+    () => Promise.reject(new Error("network down")),
+    async () => {
+      await renderActions();
+      assert.equal(list.children.length, 1);
+      assert.equal(list.children[0].textContent, translate("ui.error.action.failed"));
+    });
+});
+
+test("renderAuditTable never claims nothing has been run when the fetch itself failed", async () => {
+  // Item 2: fetchRuns() failing must not be indistinguishable from the
+  // audit log genuinely being empty -- "Nothing has been run yet" is a
+  // factual claim about the machine, wrong to make at a moment the console
+  // does not actually know.
+  const table = new FakeElement("table");
+  await withStubbedEnvironment({ "audit-table": table },
+    () => Promise.resolve({ ok: false, status: 503, json: async () => ({}) }),
+    async () => {
+      await renderAuditTable();
+      const [, body] = table.children;
+      assert.equal(body.children.length, 1);
+      const message = body.children[0].children[0].textContent;
+      assert.notEqual(message, translate("ui.actions.audit.empty"));
+      assert.equal(message, translate("ui.error.action.failed"));
+    });
 });

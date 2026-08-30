@@ -13,7 +13,7 @@
 // whatever happened to arrive over the wire.
 
 import { el, clear } from "./dom.js";
-import { authHeaders, translate, formatNumber, formatTime, formatDate } from "./i18n.js";
+import { authHeaders, translate, formatTime, formatDate } from "./i18n.js";
 
 // The last /api/actions response, kept so a run starting or finishing can
 // redraw the list (to disable/enable Run buttons) without asking again.
@@ -76,6 +76,16 @@ export function isRunDisabled(action, running) {
   return !action.available || running;
 }
 
+// A single fetch discipline for both /api/actions and /api/actions/runs: a
+// non-2xx response is a failure this caller must hear about, exactly like
+// history.js's fetchSeries() -- a caller must be able to tell "nothing was
+// recorded" (or "nothing is available") from "we could not ask".
+async function fetchJson(path) {
+  const response = await fetch(path, { headers: authHeaders() });
+  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+  return response.json();
+}
+
 function riskBadge(risk) {
   const badge = document.createElement("span");
   badge.className = `risk-badge risk-${risk}`;
@@ -121,30 +131,45 @@ function actionRow(action, running) {
   return row;
 }
 
+// A single translated line in #action-list, replacing whatever was there --
+// used both for "nothing to show" (available list is empty) and "could not
+// find out" (the fetch itself failed). Never an empty panel either way.
+function renderActionsNotice(key) {
+  const list = el("action-list");
+  clear(list);
+  const message = document.createElement("p");
+  message.className = "text-body-secondary";
+  message.textContent = translate(key);
+  list.append(message);
+}
+
 // Pure DOM builder over an already-fetched list, so a run starting or
 // finishing can redraw the Run buttons' disabled state from actionsCache
 // without a further round trip, and so it can be exercised directly in a
-// test without stubbing fetch.
+// test without stubbing fetch. An empty `actions` array reaching here is a
+// genuinely empty catalogue, never the unknown state a failed request
+// leaves behind -- see renderActions()'s own catch for that case.
 export function renderActionRows(actions, running) {
-  const list = el("action-list");
-  clear(list);
   if (actions.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "text-body-secondary";
-    empty.textContent = translate("ui.actions.none");
-    list.append(empty);
+    renderActionsNotice("ui.actions.none");
     return;
   }
+  const list = el("action-list");
+  clear(list);
   for (const action of actions) list.append(actionRow(action, running));
 }
 
 export async function renderActions() {
   let actions;
   try {
-    const response = await fetch("/api/actions", { headers: authHeaders() });
-    actions = await response.json();
+    actions = await fetchJson("/api/actions");
   } catch (error) {
+    // A blank panel here would read as "no actions exist"; it is instead
+    // "we could not find out" -- an auth hiccup, a brief restart, a
+    // network blip -- and must say so rather than leave the reader with no
+    // button and no visible way to retry short of leaving the tab.
     console.warn("action catalogue unavailable", error);
+    renderActionsNotice("ui.error.action.failed");
     return;
   }
   actionsCache = Array.isArray(actions) ? actions : [];
@@ -170,11 +195,7 @@ function auditRow(run) {
   return row;
 }
 
-// Pure DOM builder over an already-fetched list of runs -- mirrors
-// renderActionRows() above and expert.js's renderProbeTable(state).
-export function renderAuditRows(runs) {
-  const table = el("audit-table");
-  clear(table);
+function auditHead() {
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
   for (const key of ["when", "what", "source", "outcome"]) {
@@ -184,36 +205,59 @@ export function renderAuditRows(runs) {
     headRow.append(cell);
   }
   head.append(headRow);
-  table.append(head);
+  return head;
+}
 
+function auditNoticeRow(key) {
+  const row = document.createElement("tr");
+  const cell = document.createElement("td");
+  cell.colSpan = 4;
+  cell.className = "text-body-secondary";
+  cell.textContent = translate(key);
+  row.append(cell);
+  return row;
+}
+
+// Pure DOM builder over an already-fetched list of runs -- mirrors
+// renderActionRows() above and expert.js's renderProbeTable(state). An
+// empty `runs` array reaching here is a genuinely empty audit log; a fetch
+// failure is rendered separately, through renderAuditNotice(), precisely
+// so the two are never confused -- "nothing has been run yet" is a factual
+// claim this console must not make at a moment it does not actually know.
+export function renderAuditRows(runs) {
+  const table = el("audit-table");
+  clear(table);
+  table.append(auditHead());
   const body = document.createElement("tbody");
   if (runs.length === 0) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 4;
-    cell.className = "text-body-secondary";
-    cell.textContent = translate("ui.actions.audit.empty");
-    row.append(cell);
-    body.append(row);
+    body.append(auditNoticeRow("ui.actions.audit.empty"));
   } else {
     for (const run of runs) body.append(auditRow(run));
   }
   table.append(body);
 }
 
+function renderAuditNotice(key) {
+  const table = el("audit-table");
+  clear(table);
+  table.append(auditHead());
+  const body = document.createElement("tbody");
+  body.append(auditNoticeRow(key));
+  table.append(body);
+}
+
 async function fetchRuns() {
-  try {
-    const response = await fetch("/api/actions/runs", { headers: authHeaders() });
-    const body = await response.json();
-    return Array.isArray(body.runs) ? body.runs : [];
-  } catch (error) {
-    console.warn("action audit unavailable", error);
-    return [];
-  }
+  const body = await fetchJson("/api/actions/runs");
+  return Array.isArray(body.runs) ? body.runs : [];
 }
 
 export async function renderAuditTable() {
-  renderAuditRows(await fetchRuns());
+  try {
+    renderAuditRows(await fetchRuns());
+  } catch (error) {
+    console.warn("action audit unavailable", error);
+    renderAuditNotice("ui.error.action.failed");
+  }
 }
 
 function appendOutputLine(text) {
@@ -260,14 +304,26 @@ async function runAction(actionId) {
 
 async function finishRun(event) {
   activeRunId = null;
-  const runs = await fetchRuns();
+  let runs = [];
+  let auditFailed = false;
+  try {
+    runs = await fetchRuns();
+  } catch (error) {
+    // The run just finished; a blank or "nothing has been run yet" audit
+    // table right now would both be wrong in the same way renderActions()'s
+    // silence was -- reconcileRun() below still has the finished event's
+    // own fields to fall back on for the outcome line itself.
+    console.warn("action audit unavailable", error);
+    auditFailed = true;
+  }
   const { exitCode, durationMs, output } = reconcileRun(event, runs);
   // Reconcile against the audit row: the live pane is a view, not a
   // transcript, and an `output` event can be dropped under flood.
   if (output !== null) el("action-output").textContent = output;
   appendOutputLine(translate(outcomeKey(exitCode),
     { code: exitCode, seconds: (durationMs || 0) / 1000 }));
-  renderAuditRows(runs);
+  if (auditFailed) renderAuditNotice("ui.error.action.failed");
+  else renderAuditRows(runs);
   renderActionRows(actionsCache, false);
 }
 

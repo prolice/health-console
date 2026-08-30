@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from healthconsole.actions import CATALOGUE
 from healthconsole.config import Config
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -284,6 +285,19 @@ def make_server(cfg: Config, scheduler,
                 "depth_days": round(depth / 86_400, 2),
             }, extra_headers)
 
+        def _action_runs(self, extra_headers: dict[str, str] | None = None):
+            if shutdown_event.is_set():
+                return self._error(503, "shutting_down", "")
+            try:
+                runs = scheduler.store.read_action_runs()
+            except sqlite3.Error as exc:
+                # Same narrow shutdown race as _history above: a request
+                # thread already inside the store when cmd_run's finally
+                # block closes it out from under this one.
+                return self._error(503, "store_unavailable",
+                                   type(exc).__name__)
+            return self._json(200, {"runs": runs}, extra_headers)
+
         def _stream(self, extra_headers: dict[str, str] | None = None):
             with Handler._stream_lock:
                 if Handler._stream_count >= MAX_STREAMS:
@@ -345,6 +359,20 @@ def make_server(cfg: Config, scheduler,
                 return self._history(query, extra)
             if parsed.path == "/api/stream":
                 return self._stream(extra)
+            if parsed.path == "/api/actions":
+                # Locale-neutral: ids and risk levels only, never prose --
+                # the browser localises from its own catalogue, so one
+                # response serves every language.
+                return self._json(200, [
+                    # `available` is always true in B1: every gate that
+                    # could make it false reads probe data that does not
+                    # exist yet. It ships anyway so the front end honours
+                    # it from the start rather than being retrofitted.
+                    {"id": action.id, "risk": action.risk.value,
+                     "available": True}
+                    for action in CATALOGUE.values()], extra)
+            if parsed.path == "/api/actions/runs":
+                return self._action_runs(extra)
             return self._error(404, "unknown_route", parsed.path)
 
         # Without this, BaseHTTPRequestHandler answers any HEAD request with

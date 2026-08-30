@@ -281,6 +281,103 @@ class TestSessionCookieHeader(unittest.TestCase):
         self.assertNotIn("Secure", header)
 
 
+class ServerCase(unittest.TestCase):
+    """Starts a real server against a real Store and Scheduler."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.store = Store(":memory:")
+        cls.scheduler = Scheduler(Config(), cls.store, Ring())
+        cls.scheduler.tick(now=1000.0)
+        cls.server = make_server(Config(bind="127.0.0.1", port=0),
+                                 cls.scheduler, WEB_DIR)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.store.close()
+
+    def get(self, path):
+        return urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}{path}", timeout=5)
+
+    def get_raw(self, path) -> str:
+        return self.get(path).read().decode("utf-8")
+
+    def get_json(self, path):
+        return json.loads(self.get_raw(path))
+
+
+class TestActionReadRoutes(ServerCase):
+    def test_the_catalogue_lists_every_action_with_its_risk(self):
+        body = self.get_json("/api/actions")
+        self.assertEqual([entry["id"] for entry in body], ["apt.refresh"])
+        self.assertEqual(body[0]["risk"], "safe")
+        self.assertTrue(body[0]["available"])
+
+    def test_the_catalogue_carries_no_prose(self):
+        # The API is locale-neutral: ids and risk levels only, so one
+        # response serves both languages and switching needs no round trip.
+        raw = self.get_raw("/api/actions")
+        for word in ("Refresh", "Actualiser", "Safe", "Sans risque"):
+            self.assertNotIn(word, raw)
+
+    def test_the_audit_log_is_empty_before_anything_runs(self):
+        self.assertEqual(self.get_json("/api/actions/runs")["runs"], [])
+
+    def test_the_audit_log_returns_what_the_store_holds(self):
+        self.store.write_action_run(
+            "r1", 1000, "apt.refresh", "127.0.0.1", 0, 2140, "Done\n")
+        runs = self.get_json("/api/actions/runs")["runs"]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["action_id"], "apt.refresh")
+
+
+class TestActionAuditLogEdgeCases(ServerCase):
+    """Its own store, isolated from TestActionReadRoutes's ordering-sensitive
+    'empty before anything runs' assertion.
+    """
+
+    def test_a_killed_run_reports_a_null_exit_code_not_zero(self):
+        # exit_code is None for a run that was killed -- that distinction
+        # is load-bearing and must survive into the JSON as null, not 0,
+        # which would read as a success.
+        self.store.write_action_run(
+            "r2", 2000, "apt.refresh", "127.0.0.1", None, 30_000, "")
+        runs = self.get_json("/api/actions/runs")["runs"]
+        killed = next(run for run in runs if run["id"] == "r2")
+        self.assertIsNone(killed["exit_code"])
+
+    def test_store_error_during_the_audit_log_is_a_503_not_a_crash(self):
+        with mock.patch.object(
+                self.store, "read_action_runs",
+                side_effect=sqlite3.InterfaceError(
+                    "bad parameter or other API misuse")):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get("/api/actions/runs")
+            self.assertEqual(ctx.exception.code, 503)
+            payload = json.loads(ctx.exception.read())
+            self.assertEqual(payload["error"], "store_unavailable")
+
+    def test_shutdown_flag_short_circuits_the_audit_log_too(self):
+        self.server.shutdown_event.set()
+        try:
+            with mock.patch.object(
+                    self.store, "read_action_runs",
+                    side_effect=AssertionError(
+                        "the store must not be touched")):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    self.get("/api/actions/runs")
+                self.assertEqual(ctx.exception.code, 503)
+                payload = json.loads(ctx.exception.read())
+                self.assertEqual(payload["error"], "shutting_down")
+        finally:
+            self.server.shutdown_event.clear()
+
+
 class TestLanCookieHandoff(unittest.TestCase):
     """Exercises do_GET's cookie handoff for a non-loopback client.
 

@@ -33,6 +33,11 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.metric.mem.available", "ui.metric.mem.available_pct",
     "ui.metric.mem.swap.used", "ui.metric.battery.charge_pct",
     "ui.metric.battery.wear_pct",
+    # Metric hints: a short, visible caption beside each Expert-mode tile
+    # (never a title="" tooltip -- see web/js/expert.js's renderTiles).
+    "ui.metric.cpu.usage.hint", "ui.metric.cpu.temp.pkg.hint",
+    "ui.metric.mem.available.hint", "ui.metric.mem.swap.used.hint",
+    "ui.metric.battery.charge_pct.hint", "ui.metric.load.1.hint",
     # Chart card groups
     "ui.chart.group.cpu", "ui.chart.group.thermal",
     "ui.chart.group.memory", "ui.chart.group.battery",

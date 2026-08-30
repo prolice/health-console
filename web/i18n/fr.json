@@ -34,6 +34,13 @@
   "ui.metric.battery.charge_pct": "Charge de la batterie",
   "ui.metric.battery.wear_pct": "Usure de la batterie",
 
+  "ui.metric.cpu.usage.hint": "À quel point le processeur est occupé en ce moment, en part de sa capacité totale. Elle monte normalement pendant un traitement lourd et redescend une fois celui-ci terminé.",
+  "ui.metric.cpu.temp.pkg.hint": "La température mesurée par le capteur du processeur lui-même. La plupart des machines restent confortablement sous 80 °C ; une valeur plus élevée qui persiste mérite d'être surveillée.",
+  "ui.metric.mem.available.hint": "La quantité de mémoire disponible immédiatement pour les programmes, sans qu'il soit nécessaire de fermer quoi que ce soit.",
+  "ui.metric.mem.swap.used.hint": "Données que l'ordinateur a sorties de la mémoire pour les poser sur le disque, faute de place. Normalement zéro.",
+  "ui.metric.battery.charge_pct.hint": "Le niveau de charge actuel de la batterie, en part d'une charge complète : il baisse sur batterie et remonte pendant la charge.",
+  "ui.metric.load.1.hint": "Compte le travail en attente d'être traité, moyenné sur la dernière minute. Une valeur proche du nombre de cœurs du processeur signifie que la machine est occupée mais suit le rythme.",
+
   "ui.chart.group.cpu": "Processeur",
   "ui.chart.group.thermal": "Température",
   "ui.chart.group.memory": "Mémoire",

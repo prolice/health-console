@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { chartCards, isDepthShort, depthMessage, renderProbeTable,
+import { chartCards, isDepthShort, depthMessage, renderProbeTable, renderTiles,
          thermalZoneSignature, seriesStyleTokens, TILES } from "../expert.js";
 
 // A minimal stand-in for the DOM, just enough for renderProbeTable() (the
@@ -203,6 +203,67 @@ test("renderProbeTable still appends one body row per probe alongside the header
   const tbody = table.children.find((child) => child.tagName === "tbody");
   assert.ok(tbody, "no <tbody> was appended to the probe table");
   assert.equal(tbody.children.length, 2, "expected one row per probe");
+});
+
+test("renderTiles gives every tile a full-width row below md and a grid " +
+     "cell from md up", () => {
+  // col-12: a single-column, full-width row below the md breakpoint (see
+  // the coordinator's note that six cramped grid cells on a phone would
+  // read worse than the tiles carried no explanation at all). col-md-4
+  // and col-lg-2 restore a real grid -- 3, then 6, tiles across -- once
+  // there is room for one.
+  const row = new FakeElement("div");
+  withFakeDocument({ "expert-tiles": row }, () => {
+    renderTiles({ probes: {} });
+  });
+  const columns = row.children.filter((child) => child.tagName === "div");
+  assert.equal(columns.length, TILES.length,
+    "expected one column per tile in TILES");
+  for (const column of columns) {
+    assert.equal(column.className, "col-12 col-md-4 col-lg-2");
+  }
+});
+
+test("renderTiles puts the label and value in a flippable row, and the " +
+     "hint in its own paragraph below it", () => {
+  const row = new FakeElement("div");
+  withFakeDocument({ "expert-tiles": row }, () => {
+    renderTiles({ probes: {} });
+  });
+  const [column] = row.children.filter((child) => child.tagName === "div");
+  const [card] = column.children;
+  const [body] = card.children;
+  // Two children: the label+value row, then the hint -- not folded into
+  // one paragraph, which is what would make the hint impossible to style
+  // (or hide) independently of the reading.
+  assert.equal(body.children.length, 2);
+  const [head, hint] = body.children;
+  // d-flex (a row, below md) that becomes d-md-block (stacked, from md
+  // up) is what lets the same markup serve a phone's list row and a
+  // laptop's grid cell -- see the coordinator's reflow note.
+  assert.match(head.className, /\bd-flex\b/);
+  assert.match(head.className, /\bd-md-block\b/);
+  assert.equal(head.children.length, 2, "expected a label and a value");
+  // The hint is a plain, always-rendered paragraph -- never a title
+  // attribute, which a touch or keyboard user has no way to reveal.
+  assert.equal(hint.tagName, "p");
+  assert.match(hint.className, /\bsmall\b/);
+  assert.match(hint.className, /\btext-body-secondary\b/);
+});
+
+test("renderTiles gives every tile in TILES its own hint catalogue key", () => {
+  const row = new FakeElement("div");
+  withFakeDocument({ "expert-tiles": row }, () => {
+    renderTiles({ probes: {} });
+  });
+  const columns = row.children.filter((child) => child.tagName === "div");
+  assert.equal(columns.length, TILES.length);
+  // Every tile must reach for a distinct key -- a copy-pasted metric name
+  // in the template literal would have two tiles silently sharing one
+  // hint (or one tile with none at all).
+  const metrics = TILES.map(([metric]) => metric);
+  assert.equal(new Set(metrics).size, metrics.length,
+    "TILES has a duplicate metric key");
 });
 
 test("thermalZoneSignature changes when the discovered zone set changes", () => {

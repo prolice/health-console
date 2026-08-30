@@ -180,7 +180,7 @@ export async function setRange(next) {
   await redrawCharts();
 }
 
-function renderTiles(state) {
+export function renderTiles(state) {
   const row = el("expert-tiles");
   clear(row);
   const heading = document.createElement("h2");
@@ -191,18 +191,42 @@ function renderTiles(state) {
   for (const [metric, read, format] of TILES) {
     const value = read(probes);
     const column = document.createElement("div");
-    column.className = "col-6 col-md-4 col-lg-2";
+    // Below md, each tile is a full-width row instead of a grid cell: six
+    // tiles each carrying an explanatory sentence (see the hint paragraph
+    // below) would be a wall of wrapped text if squeezed two-per-row on a
+    // phone -- worse than no explanation at all. A full-width row lets the
+    // sentence use the whole line and the six read naturally as a list.
+    // At md there is room for a 3-across grid, and at lg the original
+    // six-across layout.
+    column.className = "col-12 col-md-4 col-lg-2";
     const card = document.createElement("div");
-    card.className = "card h-100 text-center";
+    card.className = "card h-100";
     const body = document.createElement("div");
-    body.className = "card-body p-2";
+    // text-start below md (a list row reads left-to-right), text-center
+    // from md up (a grid cell, as this was before the hint existed).
+    body.className = "card-body p-2 text-start text-md-center";
+    const head = document.createElement("div");
+    // d-flex below md puts the label and the value on one line (the list
+    // row); d-md-block switches to the original stacked, centred layout
+    // once there is a grid cell wide enough for it.
+    head.className = "d-flex d-md-block justify-content-between "
+      + "align-items-baseline";
     const label = document.createElement("p");
-    label.className = "small text-body-secondary mb-1";
+    label.className = "small text-body-secondary mb-0 mb-md-1";
     label.textContent = metricLabel(metric);
     const reading = document.createElement("p");
     reading.className = "h5 mb-0";
     reading.textContent = value == null ? "—" : format(value);
-    body.append(label, reading);
+    head.append(label, reading);
+    const hint = document.createElement("p");
+    // A caption, not a tooltip: a title="" attribute would vanish for a
+    // touch user (nothing to hover) and a keyboard user (nothing focused
+    // to reveal it), so the explanation is a visible line at every
+    // breakpoint instead -- see the coordinator's note that ruled out both
+    // a tooltip and hiding this at any width.
+    hint.className = "small text-body-secondary mt-1 mb-0";
+    hint.textContent = translate(`ui.metric.${metric}.hint`);
+    body.append(head, hint);
     card.append(body);
     column.append(card);
     row.append(column);

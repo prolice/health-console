@@ -34,6 +34,13 @@
   "ui.metric.battery.charge_pct": "Battery charge",
   "ui.metric.battery.wear_pct": "Battery wear",
 
+  "ui.metric.cpu.usage.hint": "How busy the processor is right now, as a share of its full capacity. It naturally rises during heavy work and should fall back down once that work finishes.",
+  "ui.metric.cpu.temp.pkg.hint": "The temperature measured by the processor's own sensor. Most machines run comfortably below 80 °C; a higher reading that stays there is worth watching.",
+  "ui.metric.mem.available.hint": "How much memory is free for programs to use right away, without needing to close anything first.",
+  "ui.metric.mem.swap.used.hint": "Data the computer moved out of memory onto the disk because it ran short. Normally zero.",
+  "ui.metric.battery.charge_pct.hint": "The battery's current charge, as a share of a full charge — falling while unplugged, rising while it charges.",
+  "ui.metric.load.1.hint": "Counts the work waiting to be done, averaged over the last minute. A figure around the number of processor cores means the machine is busy but keeping up.",
+
   "ui.chart.group.cpu": "Processor",
   "ui.chart.group.thermal": "Temperature",
   "ui.chart.group.memory": "Memory",

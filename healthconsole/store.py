@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -48,6 +49,21 @@ class Store:
     def __init__(self, path: Path | str) -> None:
         self.path = str(path)
         self._key_cache: dict[str, int] = {}
+        # A single sqlite3.Connection is opened once and shared by every
+        # thread that touches this Store: the ThreadingHTTPServer's request
+        # threads (reads) and the Scheduler's own thread (writes). SQLite's
+        # check_same_thread=False only disables Python's guard against
+        # cross-thread use -- it does not make concurrent use of one
+        # Connection/Cursor safe. Two threads calling execute()/fetchone()
+        # at the same time can interleave inside the connection's C-level
+        # state (execute() releases the GIL while SQLite runs), corrupting
+        # cursor results -- observed as SELECT MIN(ts) returning no row at
+        # all in oldest_ts(). This lock serialises every access to
+        # self.conn so only one thread is ever inside SQLite through this
+        # connection at a time. It is an RLock because some methods call
+        # others that also take it (e.g. write_metrics -> key_id) and a
+        # future caller doing the same must not deadlock.
+        self._lock = threading.RLock()
         try:
             self._connect()
         except sqlite3.DatabaseError as exc:
@@ -63,19 +79,24 @@ class Store:
             self._connect()
 
     def _connect(self) -> None:
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
-        # A corrupt file is not always detected by connect() itself -- SQLite
-        # opens it lazily, so the first real access (this PRAGMA) is what
-        # actually surfaces the error.
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self._create_schema()
+        with self._lock:
+            self.conn = sqlite3.connect(self.path, check_same_thread=False)
+            # A corrupt file is not always detected by connect() itself --
+            # SQLite opens it lazily, so the first real access (this
+            # PRAGMA) is what actually surfaces the error.
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+            self._create_schema()
 
     def _quarantine_corrupt_file(self, exc: Exception) -> None:
-        try:
-            self.conn.close()
-        except Exception:                          # noqa: BLE001
-            pass
+        with self._lock:
+            try:
+                self.conn.close()
+            except Exception:                      # noqa: BLE001
+                pass
+        # Only the filesystem is touched below -- no reason to hold the
+        # lock across it, and this runs once during __init__ before the
+        # Store is shared with any other thread regardless.
         quarantined = f"{self.path}.corrupt-{int(time.time())}"
         print(f"health-console: database at {self.path} is corrupt "
               f"({type(exc).__name__}: {exc}); moving it aside to "
@@ -87,76 +108,86 @@ class Store:
                 source.rename(quarantined + suffix)
 
     def _create_schema(self) -> None:
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        with self._lock:
+            self.conn.executescript(SCHEMA)
+            self.conn.commit()
 
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
     def key_id(self, key: str) -> int:
         cached = self._key_cache.get(key)
         if cached is not None:
             return cached
-        row = self.conn.execute(
-            "SELECT id FROM metric_key WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            cursor = self.conn.execute(
-                "INSERT INTO metric_key(key) VALUES (?)", (key,))
-            self.conn.commit()
-            key_id = int(cursor.lastrowid)
-        else:
-            key_id = int(row[0])
-        self._key_cache[key] = key_id
-        return key_id
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id FROM metric_key WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                cursor = self.conn.execute(
+                    "INSERT INTO metric_key(key) VALUES (?)", (key,))
+                self.conn.commit()
+                key_id = int(cursor.lastrowid)
+            else:
+                key_id = int(row[0])
+            self._key_cache[key] = key_id
+            return key_id
 
     def write_metrics(self, ts: int,
                       rows: list[tuple[str, float, float, float]]) -> None:
         if not rows:
             return
-        payload = [(ts, self.key_id(key), avg, low, high)
-                   for key, avg, low, high in rows]
-        self.conn.executemany(
-            "INSERT INTO metric(ts, key_id, avg, min, max) VALUES (?,?,?,?,?)",
-            payload)
-        self.conn.commit()
+        with self._lock:
+            payload = [(ts, self.key_id(key), avg, low, high)
+                       for key, avg, low, high in rows]
+            self.conn.executemany(
+                "INSERT INTO metric(ts, key_id, avg, min, max) "
+                "VALUES (?,?,?,?,?)", payload)
+            self.conn.commit()
 
     def read_series(self, key: str, since: int, until: int,
                     table: str = "metric") -> list[tuple[int, float]]:
         if table not in METRIC_TABLES:
             raise ValueError(f"unknown table: {table}")
-        cursor = self.conn.execute(
-            f"SELECT ts, avg FROM {table} "
-            "WHERE key_id = (SELECT id FROM metric_key WHERE key = ?) "
-            "AND ts BETWEEN ? AND ? ORDER BY ts",
-            (key, since, until))
-        return [(int(ts), float(value)) for ts, value in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.execute(
+                f"SELECT ts, avg FROM {table} "
+                "WHERE key_id = (SELECT id FROM metric_key WHERE key = ?) "
+                "AND ts BETWEEN ? AND ? ORDER BY ts",
+                (key, since, until))
+            return [(int(ts), float(value)) for ts, value in cursor.fetchall()]
 
     def count_rows(self, table: str) -> int:
         if table not in ALL_TABLES:
             raise ValueError(f"unknown table: {table}")
-        return int(self.conn.execute(
-            f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        with self._lock:
+            return int(self.conn.execute(
+                f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
     def distinct_metric_count(self) -> int:
-        return int(self.conn.execute(
-            "SELECT COUNT(DISTINCT key_id) FROM metric").fetchone()[0])
+        with self._lock:
+            return int(self.conn.execute(
+                "SELECT COUNT(DISTINCT key_id) FROM metric").fetchone()[0])
 
     def oldest_ts(self, table: str, metric: str | None = None) -> int | None:
         if table not in METRIC_TABLES:
             raise ValueError(f"unknown table: {table}")
-        if metric is None:
-            row = self.conn.execute(f"SELECT MIN(ts) FROM {table}").fetchone()
-        else:
-            row = self.conn.execute(
-                f"SELECT MIN(ts) FROM {table} "
-                "WHERE key_id = (SELECT id FROM metric_key WHERE key = ?)",
-                (metric,)).fetchone()
-        return None if row[0] is None else int(row[0])
+        with self._lock:
+            if metric is None:
+                row = self.conn.execute(
+                    f"SELECT MIN(ts) FROM {table}").fetchone()
+            else:
+                row = self.conn.execute(
+                    f"SELECT MIN(ts) FROM {table} "
+                    "WHERE key_id = (SELECT id FROM metric_key WHERE key = ?)",
+                    (metric,)).fetchone()
+            return None if row[0] is None else int(row[0])
 
     def db_bytes(self) -> int:
         if self.path == ":memory:":
-            pages = self.conn.execute("PRAGMA page_count").fetchone()[0]
-            page_size = self.conn.execute("PRAGMA page_size").fetchone()[0]
+            with self._lock:
+                pages = self.conn.execute("PRAGMA page_count").fetchone()[0]
+                page_size = self.conn.execute("PRAGMA page_size").fetchone()[0]
             return int(pages) * int(page_size)
         return sum(
             Path(self.path + suffix).stat().st_size
@@ -172,23 +203,25 @@ class Store:
         elapsed buckets are processed, so no partial average is frozen in.
         """
         boundary = (now // period) * period
-        rows = self.conn.execute(
-            "SELECT (ts / ?) * ? AS bucket, key_id, AVG(avg), MIN(min), MAX(max) "
-            "FROM metric WHERE ts < ? GROUP BY bucket, key_id",
-            (period, period, boundary)).fetchall()
-        written = 0
-        for bucket, key_id, avg, low, high in rows:
-            exists = self.conn.execute(
-                "SELECT 1 FROM metric_5m WHERE ts = ? AND key_id = ?",
-                (bucket, key_id)).fetchone()
-            if exists:
-                continue
-            self.conn.execute(
-                "INSERT INTO metric_5m(ts, key_id, avg, min, max) "
-                "VALUES (?,?,?,?,?)", (bucket, key_id, avg, low, high))
-            written += 1
-        self.conn.commit()
-        return written
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT (ts / ?) * ? AS bucket, key_id, "
+                "AVG(avg), MIN(min), MAX(max) "
+                "FROM metric WHERE ts < ? GROUP BY bucket, key_id",
+                (period, period, boundary)).fetchall()
+            written = 0
+            for bucket, key_id, avg, low, high in rows:
+                exists = self.conn.execute(
+                    "SELECT 1 FROM metric_5m WHERE ts = ? AND key_id = ?",
+                    (bucket, key_id)).fetchone()
+                if exists:
+                    continue
+                self.conn.execute(
+                    "INSERT INTO metric_5m(ts, key_id, avg, min, max) "
+                    "VALUES (?,?,?,?,?)", (bucket, key_id, avg, low, high))
+                written += 1
+            self.conn.commit()
+            return written
 
     def prune(self, cfg, now: int) -> dict[str, int]:
         """Apply the retention periods. Returns rows deleted per table.
@@ -209,16 +242,18 @@ class Store:
             "action_run": now - cfg.retention.audit_days * day,
         }
         deleted: dict[str, int] = {}
-        for table, cutoff in cutoffs.items():
+        with self._lock:
+            for table, cutoff in cutoffs.items():
+                cursor = self.conn.execute(
+                    f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+                deleted[table] = max(0, cursor.rowcount)
             cursor = self.conn.execute(
-                f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
-            deleted[table] = max(0, cursor.rowcount)
-        cursor = self.conn.execute(
-            "DELETE FROM event WHERE closed_ts IS NOT NULL AND closed_ts < ?",
-            (now - cfg.retention.event_days * day,))
-        deleted["event"] = max(0, cursor.rowcount)
-        self.conn.commit()
-        return deleted
+                "DELETE FROM event WHERE closed_ts IS NOT NULL "
+                "AND closed_ts < ?",
+                (now - cfg.retention.event_days * day,))
+            deleted["event"] = max(0, cursor.rowcount)
+            self.conn.commit()
+            return deleted
 
     def available_depth_seconds(self, table: str, now: int,
                                 metric: str | None = None) -> int:
@@ -232,5 +267,11 @@ class Store:
         return 0 if oldest is None else max(0, now - oldest)
 
     def vacuum(self) -> None:
-        self.conn.execute("VACUUM")
-        self.conn.commit()
+        # VACUUM can take a while on a large database, but this is only ever
+        # invoked from the standalone `health-console prune` CLI command
+        # (see cli.py), which opens its own Store in its own process -- it
+        # is never called from the running console's server or scheduler,
+        # so holding the lock here never competes with a concurrent reader.
+        with self._lock:
+            self.conn.execute("VACUUM")
+            self.conn.commit()

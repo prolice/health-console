@@ -196,9 +196,17 @@ export function renderTiles(state) {
     // below) would be a wall of wrapped text if squeezed two-per-row on a
     // phone -- worse than no explanation at all. A full-width row lets the
     // sentence use the whole line and the six read naturally as a list.
-    // At md there is room for a 3-across grid, and at lg the original
-    // six-across layout.
-    column.className = "col-12 col-md-4 col-lg-2";
+    // md switches to a real grid, but stops at two-across: with the page
+    // capped at .view-wide's 76rem, a six-across (col-*-2) cell's text
+    // column can never exceed roughly 171px no matter how wide the window
+    // gets -- narrower than the ~217px a three-across md cell has at its
+    // own *narrowest* (768px). Six-across would be an even worse wall of
+    // wrapped text than the phone case above was written to avoid, right
+    // where this console is read most often: an ordinary 13" laptop,
+    // ~1000-1100px wide. xl goes to three-across instead, where the
+    // narrowest cell (at 1200px) is still comfortably above the
+    // two-across floor.
+    column.className = "col-12 col-md-6 col-xl-4";
     const card = document.createElement("div");
     card.className = "card h-100";
     const body = document.createElement("div");

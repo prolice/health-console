@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { chartCards, isDepthShort, depthMessage, renderProbeTable, renderTiles,
          thermalZoneSignature, seriesStyleTokens, TILES } from "../expert.js";
@@ -209,9 +210,14 @@ test("renderTiles gives every tile a full-width row below md and a grid " +
      "cell from md up", () => {
   // col-12: a single-column, full-width row below the md breakpoint (see
   // the coordinator's note that six cramped grid cells on a phone would
-  // read worse than the tiles carried no explanation at all). col-md-4
-  // and col-lg-2 restore a real grid -- 3, then 6, tiles across -- once
-  // there is room for one.
+  // read worse than the tiles carried no explanation at all). col-md-6
+  // and col-xl-4 restore a real grid -- 2, then 3, tiles across -- once
+  // there is room for one. Never 6-across: with the page capped at
+  // .view-wide's max width, a six-across cell's text column can never
+  // reach the width a two-across cell has even at its narrowest, so a
+  // six-across stage would recreate the same wall of wrapped text this
+  // reflow exists to avoid, right at the most common viewport this
+  // console is read at (an ordinary laptop).
   const row = new FakeElement("div");
   withFakeDocument({ "expert-tiles": row }, () => {
     renderTiles({ probes: {} });
@@ -220,7 +226,7 @@ test("renderTiles gives every tile a full-width row below md and a grid " +
   assert.equal(columns.length, TILES.length,
     "expected one column per tile in TILES");
   for (const column of columns) {
-    assert.equal(column.className, "col-12 col-md-4 col-lg-2");
+    assert.equal(column.className, "col-12 col-md-6 col-xl-4");
   }
 });
 
@@ -252,18 +258,23 @@ test("renderTiles puts the label and value in a flippable row, and the " +
 });
 
 test("renderTiles gives every tile in TILES its own hint catalogue key", () => {
-  const row = new FakeElement("div");
-  withFakeDocument({ "expert-tiles": row }, () => {
-    renderTiles({ probes: {} });
-  });
-  const columns = row.children.filter((child) => child.tagName === "div");
-  assert.equal(columns.length, TILES.length);
-  // Every tile must reach for a distinct key -- a copy-pasted metric name
-  // in the template literal would have two tiles silently sharing one
-  // hint (or one tile with none at all).
-  const metrics = TILES.map(([metric]) => metric);
-  assert.equal(new Set(metrics).size, metrics.length,
-    "TILES has a duplicate metric key");
+  // Nothing derives the hint keys from TILES anywhere else --
+  // tests/test_i18n.py keeps its own hand-written list -- so this is the
+  // only check standing between a seventh tile and a shipped, empty
+  // caption. Read the real catalogues renderTiles() itself pulls
+  // `ui.metric.${metric}.hint` from (see expert.js) and require the key to
+  // exist, with real text, for every entry in TILES, in both locales.
+  const i18nDir = new URL("../../i18n/", import.meta.url);
+  const en = JSON.parse(readFileSync(new URL("en.json", i18nDir), "utf8"));
+  const fr = JSON.parse(readFileSync(new URL("fr.json", i18nDir), "utf8"));
+  for (const [metric] of TILES) {
+    const key = `ui.metric.${metric}.hint`;
+    for (const [locale, catalogue] of [["en", en], ["fr", fr]]) {
+      assert.equal(typeof catalogue[key], "string",
+        `${locale} catalogue is missing ${key}`);
+      assert.ok(catalogue[key].length > 0, `${locale}'s ${key} is empty`);
+    }
+  }
 });
 
 test("thermalZoneSignature changes when the discovered zone set changes", () => {

@@ -317,6 +317,25 @@ class TestSimpleModeCharts(unittest.TestCase):
         self.assertIn("lastFindingsSignature", self.js)
         self.assertIn("currentLocale", self.js)
 
+    def test_gauge_is_not_redrawn_when_nothing_changed(self):
+        # The gauge is exactly as vulnerable to the every-2s pulse as the
+        # cards are: destroying and recreating it on every tick replays its
+        # entry animation even when the score has not moved, which reads as
+        # the machine's health visibly wavering rather than as a repaint.
+        self.assertIn("gaugeSignature", self.js)
+        self.assertIn("lastGaugeSignature", self.js)
+        # Its colours are baked into the canvas at draw time and do not
+        # follow an updated CSS custom property on their own, so something
+        # must be able to force a redraw when only the theme changed.
+        self.assertIn("forceGaugeRedraw", self.js)
+
+    def test_gauge_redraw_is_forced_on_a_theme_change(self):
+        # Without this, a theme flip that does not also change the score
+        # would leave the gauge showing the old theme's colours.
+        app_js = js("app.js")
+        self.assertIn("whenThemeChanges", app_js)
+        self.assertIn("forceGaugeRedraw", app_js)
+
     def test_finding_cards_get_bootstrap_chrome(self):
         # Task 5 stripped style.css down to a thin layer over Bootstrap's
         # .card; .finding only narrows the left border, which paints

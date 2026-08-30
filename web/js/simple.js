@@ -29,6 +29,7 @@ const SEVERITY_COLOUR = {
 };
 
 let lastFindingsSignature = null;
+let lastGaugeSignature = null;
 
 function card(severity, titleText, whyText) {
   const article = document.createElement("article");
@@ -99,6 +100,35 @@ export function findingsSignature(state) {
   return JSON.stringify({ locale: currentLocale(), findings, probes });
 }
 
+// A cheap fingerprint of what the verdict gauge currently displays: the
+// score, and the severity that picks its colour. renderSimple() redraws the
+// gauge only when this changes since the last tick -- the same discipline
+// findingsSignature() applies to the cards, and for the same reason: a
+// destroy-and-redraw every 2s replays the gauge's entry animation, which
+// reads as the machine's health visibly pulsing rather than as a repaint.
+//
+// null for "no measurement" is deliberate and load-bearing: it can never
+// equal a real JSON.stringify(...) string, so a transition into or out of
+// the no-measurement state always looks like a change, even when the score
+// on the way back out happens to match the score on the way in -- the
+// canvas itself was torn down in between (see renderNoMeasurement) and
+// genuinely needs redrawing, not just a value that happens to compare equal.
+export function gaugeSignature(state) {
+  if (!hasMeasurement(state)) return null;
+  return JSON.stringify([state.score, state.severity || "OK"]);
+}
+
+// Called by whatever re-triggers a render after the page's colours change
+// with no new measurement -- a theme flip is the only case today (see
+// app.js's whenThemeChanges wiring). themeColour() is read once, at draw
+// time, and baked into the canvas; unlike the rest of the page, a chart
+// does not just follow updated CSS custom properties on its own. Forgetting
+// the last gauge signature makes the next renderSimple() call redraw it
+// even though the score has not moved.
+export function forceGaugeRedraw() {
+  lastGaugeSignature = null;
+}
+
 function rebuildFindings(state) {
   const host = el("findings");
   destroyIn(host);
@@ -144,6 +174,7 @@ function renderNoMeasurement(state) {
   setText(el("verdict-sentence"), translate("ui.state.no_measurement.detail"));
   setText(el("score"), "—");
   destroyIn(el("verdict-gauge").parentElement);
+  lastGaugeSignature = null;
   const host = el("findings");
   destroyIn(host);
   host.textContent = "";
@@ -163,10 +194,18 @@ export function renderSimple(state) {
   setText(el("verdict-sentence"), translate(`verdict.${severity}`));
   setText(el("score"), String(state.score));
 
-  const gaugeCanvas = el("verdict-gauge");
-  destroyIn(gaugeCanvas.parentElement);
-  drawGauge(gaugeCanvas, state.score,
-            themeColour(SEVERITY_COLOUR[severity] || "--hc-info"));
+  // See gaugeSignature(): the gauge is destroyed and redrawn -- replaying
+  // its entry animation -- only when the score or severity actually moved,
+  // or forceGaugeRedraw() asked for it (a theme flip with an unchanged
+  // score still must not keep yesterday's colours).
+  const gaugeKey = gaugeSignature(state);
+  if (gaugeKey !== lastGaugeSignature) {
+    lastGaugeSignature = gaugeKey;
+    const gaugeCanvas = el("verdict-gauge");
+    destroyIn(gaugeCanvas.parentElement);
+    drawGauge(gaugeCanvas, state.score,
+              themeColour(SEVERITY_COLOUR[severity] || "--hc-info"));
+  }
 
   // See findingsSignature(): rebuilding the cards (and re-fetching every
   // sparkline) is skipped whenever what they display has not changed since

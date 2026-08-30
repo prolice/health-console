@@ -7,7 +7,7 @@ import {
 } from "./i18n.js";
 import { connect, isMeasurementStale, lastKnownState, markFreshness,
          noteState, setInterfaceTextUnavailable } from "./stream.js";
-import { renderSimple } from "./simple.js";
+import { forceGaugeRedraw, renderSimple } from "./simple.js";
 
 const DEFAULT_MODE = "simple";
 
@@ -94,6 +94,16 @@ async function start() {
     });
   whenLocaleChanges(() => {
     paintChrome();
+    const state = lastKnownState();
+    if (state) render(state);
+  });
+  // The verdict gauge skips its own redraw when the score has not moved
+  // (see simple.js's gaugeSignature()), so a theme flip alone would leave
+  // it in the old theme's colours -- forceGaugeRedraw() clears that memo
+  // before the re-render picks the new one up. Task 9 registers its own
+  // whenThemeChanges handler for the Expert chart grid the same way.
+  whenThemeChanges(() => {
+    forceGaugeRedraw();
     const state = lastKnownState();
     if (state) render(state);
   });

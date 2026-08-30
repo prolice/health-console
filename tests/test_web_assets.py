@@ -405,5 +405,87 @@ class TestNoHardCodedWording(unittest.TestCase):
             self.assertIn(prefix, joined)
 
 
+class TestExpertMode(unittest.TestCase):
+    def setUp(self):
+        self.js = js("expert.js")
+
+    def test_depth_is_reported_not_silently_swallowed(self):
+        # A three-quarters-empty 90 d chart reads as a collection failure
+        # when history has simply just begun. depth_days already comes back
+        # from the server; it must reach the reader.
+        self.assertIn("depthDays", self.js)
+        self.assertIn("ui.chart.depth_short", self.js)
+
+    def test_absent_data_is_not_drawn_as_zero(self):
+        self.assertIn("ui.chart.empty", self.js)
+
+    def test_a_failed_history_call_is_reported(self):
+        self.assertIn("ui.error.history", self.js)
+
+    def test_missing_library_is_announced_rather_than_left_blank(self):
+        self.assertIn("ui.chart.unavailable", self.js)
+
+    def test_the_tile_row_is_not_a_live_region(self):
+        # Tiles change every 2 s; aria-live there is continuous chatter.
+        self.assertNotIn("aria-live", self.js)
+
+    def test_charts_are_destroyed_before_the_grid_is_cleared(self):
+        # Chart.js keeps a live instance per canvas; clearing #chart-grid
+        # first would detach the canvases without releasing them.
+        redraw = re.search(
+            r"export async function redrawCharts\(\)\s*\{(.*?)\n\}",
+            self.js, re.DOTALL)
+        self.assertIsNotNone(redraw, "redrawCharts() not found")
+        body = redraw.group(1)
+        destroy_pos = body.find("destroyIn(")
+        clear_pos = body.find("clear(grid)")
+        self.assertNotEqual(destroy_pos, -1, "redrawCharts never calls destroyIn")
+        self.assertNotEqual(clear_pos, -1, "redrawCharts never clears #chart-grid")
+        self.assertLess(destroy_pos, clear_pos,
+                        "#chart-grid is cleared before its charts are destroyed")
+
+    def test_a_generation_counter_guards_against_concurrent_redraws(self):
+        # Two quick range clicks (or a click racing refresh, or a theme
+        # change) must not interleave cards from two different windows.
+        self.assertIn("generation", self.js)
+
+    def test_thermal_card_is_built_from_the_live_zones_not_a_static_list(self):
+        # thermal.acpitz, thermal.x86_pkg_temp, ... are discovered from the
+        # kernel at runtime and differ per machine.
+        self.assertIn("probes.thermal", self.js)
+        self.assertIn("zones", self.js)
+        self.assertIn("metricLabel", self.js)
+
+    def test_raw_json_has_exactly_one_owner(self):
+        self.assertIn('el("raw").textContent', self.js)
+        self.assertNotIn('el("raw").textContent', js("simple.js"))
+
+
+class TestMetricKeysExist(unittest.TestCase):
+    """A typo in a metric key raises nothing -- it yields an empty chart.
+
+    Placed here rather than with history.js: it reads every module that
+    names a metric, and expert.js is the last of them to be written.
+    """
+
+    KNOWN = {
+        "cpu.usage", "cpu.freq", "load.1", "cpu.temp.pkg",
+        "mem.available", "mem.available_pct", "mem.swap.used",
+        "battery.charge_pct", "battery.wear_pct",
+    }
+
+    def test_every_referenced_metric_key_is_one_a_probe_emits(self):
+        source = js("charts.js") + js("expert.js") + js("simple.js")
+        # (?!\s*:) excludes a match used as an object key -- simple.js's
+        # FINDING_METRIC maps finding ids ("cpu.usage_high", "battery.wear")
+        # to the metric they illustrate, and those ids happen to match this
+        # same dotted shape without being metric keys themselves.
+        used = set(re.findall(r'"((?:cpu|mem|load|battery)\.[a-z0-9_.]+)"(?!\s*:)',
+                              source))
+        unknown = used - self.KNOWN
+        self.assertEqual(unknown, set(),
+                         f"referenced metric keys no probe emits: {unknown}")
+
+
 if __name__ == "__main__":
     unittest.main()

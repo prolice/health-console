@@ -179,7 +179,6 @@ function renderNoMeasurement(state) {
   destroyIn(host);
   host.textContent = "";
   lastFindingsSignature = null;
-  el("raw").textContent = JSON.stringify(state, null, 2);
 }
 
 export function renderSimple(state) {
@@ -215,6 +214,4 @@ export function renderSimple(state) {
     lastFindingsSignature = signature;
     rebuildFindings(state);
   }
-
-  el("raw").textContent = JSON.stringify(state, null, 2);
 }

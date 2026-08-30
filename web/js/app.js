@@ -8,6 +8,8 @@ import {
 import { connect, isMeasurementStale, lastKnownState, markFreshness,
          noteState, setInterfaceTextUnavailable } from "./stream.js";
 import { forceGaugeRedraw, renderSimple } from "./simple.js";
+import { paintRangeControl, redrawCharts, renderExpert } from "./expert.js";
+import { clearCache } from "./history.js";
 
 const DEFAULT_MODE = "simple";
 
@@ -63,11 +65,15 @@ function switchMode(mode) {
   el("mode-simple").setAttribute("aria-selected", String(simple));
   el("mode-expert").setAttribute("aria-selected", String(!simple));
   localStorage.setItem("mode", mode);
+  // Charts redraw only on a range change, refresh, a theme change, and
+  // here -- never on the 2s tick that renderExpert() rides along on.
+  if (!simple) redrawCharts();
 }
 
 function render(state) {
   noteState(state);
   renderSimple(state);
+  if (!el("expert").hidden) renderExpert(state);
   markFreshness(isMeasurementStale(state));
 }
 
@@ -77,7 +83,10 @@ async function start() {
   el("mode-expert").addEventListener("click", () => switchMode("expert"));
   el("locale").addEventListener("change", (event) =>
     setLocale(event.target.value));
-  switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
+  el("refresh").addEventListener("click", () => {
+    clearCache();
+    redrawCharts();
+  });
   for (const id of THEMES) {
     el(`theme-${id}`).addEventListener("click", () => applyTheme(id));
   }
@@ -94,22 +103,38 @@ async function start() {
     });
   whenLocaleChanges(() => {
     paintChrome();
+    // The range buttons are translated text too, and (unlike paintChrome's
+    // targets) built from scratch each time -- this also restores which
+    // one is pressed from expert.js's own range state.
+    paintRangeControl();
     const state = lastKnownState();
     if (state) render(state);
   });
   // The verdict gauge skips its own redraw when the score has not moved
   // (see simple.js's gaugeSignature()), so a theme flip alone would leave
   // it in the old theme's colours -- forceGaugeRedraw() clears that memo
-  // before the re-render picks the new one up. Task 9 registers its own
-  // whenThemeChanges handler for the Expert chart grid the same way.
+  // before the re-render picks the new one up.
   whenThemeChanges(() => {
     forceGaugeRedraw();
     const state = lastKnownState();
     if (state) render(state);
   });
+  // Chart colours are read from CSS custom properties at draw time (see
+  // charts.js's themeColour()), so a chart already on screen keeps the old
+  // theme's colours until told otherwise. Registered independently of the
+  // gauge's handler above, per app.js's existing whenThemeChanges contract,
+  // and only while Expert mode is actually visible.
+  whenThemeChanges(() => {
+    if (!el("expert").hidden) redrawCharts();
+  });
   try {
     await loadFallback();
     await setLocale(pickLocale());
+    // Only now, with the catalogue loaded and the range buttons painted, is
+    // it safe to switch into a stored "expert" mode: switchMode() redraws
+    // every chart, and every title and notice a chart card can show is
+    // translated text that would otherwise come back empty.
+    switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
     try {
       render(await (await fetch("/api/now", { headers: authHeaders() })).json());
     } catch (error) {

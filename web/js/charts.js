@@ -75,6 +75,23 @@ export function destroyAll() {
   live.clear();
 }
 
+// Chart.js keeps a live instance per canvas; detaching the canvas from the
+// document does not release it. renderSimple() repaints on every SSE event
+// (every 2s), so failing to destroy first would leak an instance per
+// finding, per tick, for as long as the page stays open. Called on a
+// container (e.g. #findings, or the gauge's card-body) rather than a single
+// canvas, so one call clears every sparkline a repaint is about to replace.
+export function destroyIn(container) {
+  if (!chartsAvailable()) return;
+  for (const canvas of container.querySelectorAll("canvas")) {
+    const chart = globalThis.Chart.getChart(canvas);
+    if (chart) {
+      chart.destroy();
+      live.delete(chart);
+    }
+  }
+}
+
 function baseOptions(points) {
   return {
     responsive: true,

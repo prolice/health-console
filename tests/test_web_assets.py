@@ -267,6 +267,70 @@ class TestSimpleModule(unittest.TestCase):
         self.assertIn("raw-detail", self.js)
 
 
+class TestSimpleModeCharts(unittest.TestCase):
+    def setUp(self):
+        self.js = js("simple.js")
+
+    def test_incoherent_battery_gets_no_sparkline(self):
+        # Drawing a curve of values the console has just declared
+        # untrustworthy would be the exact lie the project refuses to tell.
+        self.assertIn("FINDING_METRIC", self.js)
+        self.assertNotRegex(
+            self.js, r'"battery\.incoherent"\s*:\s*"',
+            "battery.incoherent is mapped to a metric; it must not be")
+
+    def test_every_mapped_finding_id_is_one_the_rules_emit(self):
+        from healthconsole.findings import FINDING_IDS
+        mapped = set(re.findall(r'"([a-z]+\.[a-z_]+)":\s*"[a-z]', self.js))
+        self.assertLessEqual(
+            mapped, set(FINDING_IDS),
+            f"simple.js maps finding ids no rule emits: {mapped - set(FINDING_IDS)}")
+
+    def test_the_gauge_is_hidden_from_screen_readers(self):
+        # The score sits beside it as text; announcing it twice is noise.
+        self.assertIn("verdict-gauge", self.js)
+        self.assertIn('aria-hidden', read("index.html"))
+
+    def test_charts_are_destroyed_before_their_container_is_cleared(self):
+        # Chart.js keeps a live instance per canvas. renderSimple() repaints
+        # on every SSE event (every 2s); a clear-then-rebuild that skips
+        # destroyIn() first leaks one Chart.js instance per finding, per
+        # tick, for as long as the page stays open.
+        self.assertIn("destroyIn", self.js)
+        rebuild = re.search(r"function rebuildFindings\([^)]*\)\s*\{([^}]*)",
+                            self.js, re.DOTALL)
+        self.assertIsNotNone(rebuild, "rebuildFindings() not found")
+        body = rebuild.group(1)
+        destroy_pos = body.find("destroyIn(")
+        clear_pos = body.find('.textContent = ""')
+        self.assertNotEqual(destroy_pos, -1, "rebuildFindings never calls destroyIn")
+        self.assertNotEqual(clear_pos, -1, 'rebuildFindings never clears #findings')
+        self.assertLess(destroy_pos, clear_pos,
+                        "#findings is cleared before its charts are destroyed")
+
+    def test_findings_are_not_rebuilt_when_nothing_changed(self):
+        # A repaint that always tears down and rebuilds every card (and
+        # re-fetches every sparkline) would replay the entry animation on
+        # every 2s tick -- a visible pulse for any reader who has not asked
+        # for reduced motion -- even when the findings never changed.
+        self.assertIn("findingsSignature", self.js)
+        self.assertIn("lastFindingsSignature", self.js)
+        self.assertIn("currentLocale", self.js)
+
+    def test_finding_cards_get_bootstrap_chrome(self):
+        # Task 5 stripped style.css down to a thin layer over Bootstrap's
+        # .card; .finding only narrows the left border, which paints
+        # nothing without .card's own border-style. Without these classes a
+        # finding has no background, no border, and no visible severity edge.
+        self.assertIn('`finding card severity-${severity}`', self.js)
+        self.assertIn('"card-body"', self.js)
+
+    def test_sparkline_points_are_passed_through_without_extra_chart_options(self):
+        # simple.js must not grow Chart.js knowledge of its own: normalized
+        # is set inside drawSparkline() (charts.js), not here.
+        self.assertNotIn("normalized", self.js)
+
+
 class TestRangeAgreement(unittest.TestCase):
     """The front end and the server must agree on the window identifiers."""
 

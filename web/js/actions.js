@@ -273,7 +273,7 @@ function reportActionError(key) {
   renderActionRows(actionsCache, false);
 }
 
-async function runAction(actionId) {
+export async function runAction(actionId) {
   if (!actionId) return;
   clear(el("action-output"));
   // Disable every Run button for the round trip too, not only once a
@@ -283,8 +283,12 @@ async function runAction(actionId) {
   appendOutputLine(translate("ui.actions.running"));
   let response;
   try {
+    // X-Health-Action is not a secret -- it is a capability a cross-origin
+    // form or fetch cannot set, which is what closes a loopback CSRF hole
+    // this route used to have. No body: the server now refuses one.
     response = await fetch(`/api/actions/${encodeURIComponent(actionId)}`,
-      { method: "POST", headers: authHeaders() });
+      { method: "POST",
+        headers: { ...authHeaders(), "X-Health-Action": "run" } });
   } catch (error) {
     console.warn("action request failed", error);
     reportActionError("ui.error.action.failed");

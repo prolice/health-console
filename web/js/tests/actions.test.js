@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { errorKeyForStatus, outcomeKey, shouldTrackEvent, reconcileRun,
          isRunDisabled, renderActionRows, renderAuditRows, renderActions,
-         renderAuditTable } from "../actions.js";
+         renderAuditTable, runAction } from "../actions.js";
 import { loadFallback, translate } from "../i18n.js";
 
 // The real English catalogue, read directly rather than re-typed here --
@@ -239,3 +239,24 @@ test("renderAuditTable never claims nothing has been run when the fetch itself f
       assert.equal(message, translate("ui.error.action.failed"));
     });
 });
+
+test("runAction's POST carries the intent header and no body", async () => {
+  // A cross-origin form or fetch cannot set a custom header, which is
+  // exactly what closes the loopback CSRF hole this route used to have --
+  // the server now refuses a POST that lacks X-Health-Action outright.
+  const list = new FakeElement("div");
+  const output = new FakeElement("pre");
+  let captured = null;
+  await withStubbedEnvironment({ "action-list": list, "action-output": output },
+    (url, options) => {
+      captured = options;
+      return Promise.resolve({ status: 202, json: async () => ({ run_id: "run-1" }) });
+    },
+    async () => {
+      await runAction("apt.refresh");
+    });
+  assert.equal(captured.method, "POST");
+  assert.equal(captured.headers["X-Health-Action"], "run");
+  assert.equal(captured.body, undefined);
+});
+

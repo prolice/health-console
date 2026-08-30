@@ -8,6 +8,9 @@ test("the four windows the server accepts are declared", () => {
 });
 
 test("cache keys separate metric from range unambiguously", () => {
+  // Ordinary case: same metric, different ranges
   assert.notEqual(cacheKey("cpu.usage", "1h"), cacheKey("cpu.usage", "24h"));
-  assert.notEqual(cacheKey("cpu.usage", "1h"), cacheKey("cpu", "usage1h"));
+  // Ambiguous case with string concat: "a" + "b c" vs "a b" + "c" both yield
+  // "a b c", but JSON.stringify distinguishes them.
+  assert.notEqual(cacheKey("a", "b c"), cacheKey("a b", "c"));
 });

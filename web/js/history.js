@@ -11,7 +11,12 @@ export class HistoryError extends Error {}
 
 const cache = new Map();
 
-export function cacheKey(metric, range) { return `${metric} ${range}`; }
+// Unambiguous by construction: a delimiter-joined key collides as soon as
+// either component can contain the delimiter, and nothing here enforces
+// that they cannot.
+export function cacheKey(metric, range) {
+  return JSON.stringify([metric, range]);
+}
 
 export function clearCache() { cache.clear(); }
 
@@ -33,10 +38,29 @@ export async function fetchSeries(metric, range, { force = false } = {}) {
   if (!response.ok) {
     throw new HistoryError(`${metric} ${range}: HTTP ${response.status}`);
   }
-  const body = await response.json();
+
+  let body;
+  try {
+    body = await response.json();
+  } catch (cause) {
+    // A malformed response body (truncated, corrupt, or invalid JSON) is not
+    // an empty series: it is a "we could not ask" failure.
+    throw new HistoryError(`malformed JSON response for ${metric} ${range}`, { cause });
+  }
+
+  // Validate the shape before constructing a series. A 200 with missing or
+  // null fields would be indistinguishable from a genuinely empty window when
+  // cached, making the console state a falsehood about the machine.
+  if (!Array.isArray(body.points)) {
+    throw new HistoryError(`${metric} ${range}: points is not an array`);
+  }
+  if (typeof body.depth_days !== "number") {
+    throw new HistoryError(`${metric} ${range}: depth_days is not a number`);
+  }
+
   const series = {
-    points: body.points || [],
-    depthDays: body.depth_days ?? 0,
+    points: body.points,
+    depthDays: body.depth_days,
     table: body.table || "",
   };
   cache.set(key, series);

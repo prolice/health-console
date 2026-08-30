@@ -783,14 +783,19 @@ class StalledStderrCase(unittest.TestCase):
     """
 
     def run_child(self, body, budget=45):
+        """Run `body` with stderr stalled; return its reported KEY/value
+        pairs (the child prints them to a saved duplicate of stdout)."""
         script = _STALL_STDERR.format(root=_REPO_ROOT) + textwrap.dedent(body)
         done = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True,
             timeout=budget + 30, cwd=_REPO_ROOT)
-        line = [l for l in done.stdout.splitlines() if l.startswith("FREED")]
-        self.assertTrue(
-            line, f"the child produced no result; stdout={done.stdout!r}")
-        return line[0].split()[1]
+        reported = dict(
+            line.split(" ", 1) for line in done.stdout.splitlines()
+            if " " in line and line.split(" ", 1)[0].isupper())
+        self.assertIn(
+            "FREED", reported,
+            f"the child produced no result; stdout={done.stdout!r}")
+        return reported
 
 
 class TestLoggingUnderTheQueueMutexCannotWedgeTheRunner(StalledStderrCase):
@@ -820,7 +825,7 @@ class TestLoggingUnderTheQueueMutexCannotWedgeTheRunner(StalledStderrCase):
             runner.start(chatty, "127.0.0.1", listener)
             reached.wait(10)
             report(runner, 40)
-        """)
+        """)["FREED"]
         self.assertNotEqual(
             freed, "NEVER",
             "the run lock was never released: the reader is blocked "
@@ -854,7 +859,7 @@ class TestLoggingAFailedAuditWriteCannotWedgeTheRunner(StalledStderrCase):
             runner = ActionRunner(BrokenStore(), timeout_seconds=5)
             runner.start(TRUE, "127.0.0.1", lambda event: None)
             report(runner, 40)
-        """)
+        """)["FREED"]
         self.assertNotEqual(
             freed, "NEVER",
             "the run lock was never released: the worker is blocked "
@@ -864,47 +869,48 @@ class TestLoggingAFailedAuditWriteCannotWedgeTheRunner(StalledStderrCase):
 
 
 class TestCloseIsAtomicAgainstAConcurrentEmit(unittest.TestCase):
-    """The property the whole _EventStream design rests on, which until
-    now was pinned by nothing: a mutant that splits `close()` into two
-    critical sections -- appending "finished" and setting `_closed`
-    non-atomically -- passed the entire runner suite.
+    """The property the whole _EventStream design rests on: `close()`
+    appends the final event and refuses every later one in one
+    indivisible step.
 
+    Nothing pinned it until now. A mutant splitting `close()` into two
+    critical sections passed all 28 tests, and so did one that emits the
+    final event and then sets `_closed`.
     `TestTheEventStreamRefusesEventsAfterItCloses` carries the refusal
     half and kills a delete-the-check mutant in milliseconds, but it
     calls `close()` and then `emit()` sequentially, so `_closed` is
     already true either way and it cannot see atomicity at all.
 
-    So: race them. An `output` emit and `close("finished")` are
-    released from a shared barrier with jitter, with the delivery
-    thread parked inside the caller's callback so a backlog exists and
-    a wrongly-accepted event is genuinely handed over rather than
-    merely queued behind a thread that has run dry. Exactly two
-    outcomes are legal -- the emit took the mutex first and is
-    delivered before "finished", or it took it second and is refused --
-    and this asserts both occur (otherwise nothing was actually racing)
-    and that a third never does.
+    Two things make this one work, and my previous attempt had neither:
 
-    Resolution, measured, because this test is easy to over-trust: it
-    kills a non-atomic close whose gap is 1 ms in 232 of 400 trials. It
-    does NOT kill one whose gap is a bare mutex release and reacquire
-    -- 0 of 400, for two separate mutant shapes -- because CPython's
-    uncontended reacquire beats every waiter to the lock, even with
-    four threads hammering it and the switch interval at 1 us. No
-    pure-Python racer can resolve that window. The guard against it is
-    the module docstring's rule and the test below that enforces it by
-    parsing the source, not this one.
+    1. `sys.settrace` on the closer thread only, with `time.sleep(0)` at
+       every line, so a release/reacquire boundary inside `close()`
+       becomes a real scheduling point. A correctly locked `close()`
+       cannot be broken by a trace hook -- the emitter simply blocks on
+       the mutex -- which is why this yields no false positives.
+    2. The emitter *loops*. With a single-shot emit the closer wins the
+       barrier every time and nothing races at all; that was the actual
+       reason my earlier racer scored zero, not the "CPython cannot be
+       raced" conclusion I drew from it and reported. That conclusion
+       was wrong.
+
+    Measured: 0 after-`finished` deliveries in 200 trials at HEAD in
+    0.42s, against 198/200 for the two-critical-section split and
+    200/200 for emit-then-close.
     """
 
-    TRIALS = 400
+    TRIALS = 200
 
     def test_a_racing_emit_is_either_before_finished_or_refused(self):
-        rng = random.Random(20260830)
-        before = refused = 0
         violations = []
+        genuinely_raced = 0
 
         for trial in range(self.TRIALS):
             delivered = []
-            entered, release = threading.Event(), threading.Event()
+            entered = threading.Event()
+            release = threading.Event()
+            stop = threading.Event()
+            attempted = [0]
 
             def listener(event):
                 delivered.append(event["phase"])
@@ -916,68 +922,94 @@ class TestCloseIsAtomicAgainstAConcurrentEmit(unittest.TestCase):
             stream.start()
             stream.emit("started", action_id="t.race")
             self.assertTrue(entered.wait(5), "the pump never started")
-            # A backlog, so an accepted racer really is delivered.
-            stream.emit("output", line="backlog")
 
             barrier = threading.Barrier(2)
-            emit_jitter, close_jitter = rng.uniform(0, 4e-4), rng.uniform(0, 4e-4)
 
             def emitter():
                 barrier.wait()
-                time.sleep(emit_jitter)
-                stream.emit("output", line="racer")
+                while not stop.is_set():
+                    stream.emit("output", line="racer")
+                    attempted[0] += 1
+                    time.sleep(0)
+
+            def slow_line(frame, event, arg):
+                time.sleep(0)
+                return slow_line
 
             def closer():
                 barrier.wait()
-                time.sleep(close_jitter)
-                stream.close("finished", exit_code=0)
+                # This thread only: sys.settrace is thread-local. It
+                # would clash with a line-tracing coverage tool, which
+                # this project does not use.
+                sys.settrace(slow_line)
+                try:
+                    stream.close("finished", exit_code=0)
+                finally:
+                    sys.settrace(None)
 
             threads = [threading.Thread(target=emitter),
                        threading.Thread(target=closer)]
             for thread in threads:
                 thread.start()
+            threads[1].join(15)
+            stop.set()
             for thread in threads:
-                thread.join(10)
+                thread.join(15)
             release.set()
-            stream.join(10)
+            stream.join(20)
 
-            self.assertIn("finished", delivered, f"trial {trial}: {delivered}")
-            tail = delivered[delivered.index("finished") + 1:]
-            if tail:
-                violations.append((trial, delivered))
-            elif delivered.count("output") == 2:
-                before += 1
-            else:
-                refused += 1
+            self.assertIn("finished", delivered, f"trial {trial}")
+            if delivered[delivered.index("finished") + 1:]:
+                violations.append(delivered[-6:])
+            outputs = delivered.count("output")
+            if 0 < outputs < attempted[0]:
+                # Some emits landed before the close and some after:
+                # the close really did arrive mid-stream.
+                genuinely_raced += 1
 
         self.assertEqual(
             len(violations), 0,
             f"{len(violations)} of {self.TRIALS} trials delivered an event "
-            "after 'finished'; first offending sequence: "
-            f"{violations[0][1] if violations else None}")
+            f"after 'finished'; first tail: {violations[0] if violations else None}")
         self.assertGreater(
-            before, 0,
-            "no trial delivered the racing emit before 'finished' -- the "
-            "two calls are not actually racing, so this test proves nothing")
-        self.assertGreater(
-            refused, 0,
-            "no trial refused the racing emit -- the two calls are not "
-            "actually racing, so this test proves nothing")
+            genuinely_raced, self.TRIALS * 0.5,
+            f"only {genuinely_raced} of {self.TRIALS} trials had the close "
+            "land mid-stream -- the two calls are not actually racing, so "
+            "this test proves nothing")
 
 
 class TestTheModuleObeysItsOwnIORule(unittest.TestCase):
-    """The module docstring's property 3, enforced by parsing the source
-    instead of by asking a reader to notice:
+    """A cheap syntactic guard on the module docstring's property 3.
 
-        No I/O of any kind -- including this module's own logging --
-        under `_cv` or `_OutputBuffer._lock`, and none between the audit
-        write and `self._lock.release()`.
+    Read what it actually does, not what its name suggests. It parses
+    `runner.py` and looks for **calls spelled** `_log`, `_log_error`,
+    `print`, or `on_event`, appearing either lexically inside a `with
+    self._cv:` / `with self._lock:` block, or anywhere in a function
+    whose name ends `_locked`, or in `_kill_group` / `_group_is_dead` /
+    the pre-audit part of `_run`. That is a check on call-name shapes in
+    particular syntactic positions. It is not a check that the rule
+    holds.
 
-    Four rounds of fixes each reasoned their way to a correct answer for
-    the instance in front of them and missed the next one. The fourth
-    was this module's own `_log` under `_cv`, which no test and no
-    reviewer caught until it was measured. A grep is cheaper than a
-    fifth round of reasoning.
+    It was run against seventeen mutants and caught eight. The nine it
+    misses, four of which were confirmed to be real permanent wedges:
+
+    - indirection -- a module-level or method helper that calls `_log`,
+      or a module-level lambda; this test does not follow calls;
+    - I/O spelled some other way -- `sys.stderr.write`,
+      `os.write(2, ...)`, or `traceback.print_exc(file=sys.stderr)`,
+      which is a pattern this very module uses inside `_log_error`;
+    - a manual `acquire()` / `release()` pair instead of `with`, which
+      produces no `With` node to look inside;
+    - renaming `_drop_one_locked` to `_drop_one` while leaving the log
+      inside it, which simply steps outside the naming convention the
+      check leans on.
+
+    What actually catches those is the behavioural pair --
+    `TestLoggingUnderTheQueueMutexCannotWedgeTheRunner` and
+    `TestLoggingAFailedAuditWriteCannotWedgeTheRunner`, which stall
+    stderr for real and assert the lock is still freed. This test is
+    the fast, precise-message tripwire in front of them, and a reader
+    who stops here because "the rule is enforced" will be wrong.
     """
 
     BANNED = {"_log", "_log_error", "print"}
@@ -1025,6 +1057,32 @@ class TestTheModuleObeysItsOwnIORule(unittest.TestCase):
             "stderr never returns, so this hands the run lock to "
             "whoever is reading that fd.")
 
+    def test_no_io_runs_on_the_worker_before_the_audit_write(self):
+        # The half of the rule that matters most: a stall here holds the
+        # run lock with no row written at all. `_kill_group` is the one
+        # helper `_run` reaches before the write, so it is named
+        # explicitly -- this check cannot follow calls in general (see
+        # the class docstring).
+        tree, path = self.source()
+        for name in ("_kill_group", "_group_is_dead"):
+            node = next(n for n in ast.walk(tree)
+                        if isinstance(n, ast.FunctionDef) and n.name == name)
+            self.assertEqual(
+                self.banned_calls_in(node), [],
+                f"{path.name}:{name} runs on the worker thread before "
+                "the audit write; I/O there loses the row and holds the "
+                "run lock. Queue it with _defer_error instead.")
+        run = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "_run")
+        write = next(n.lineno for n in ast.walk(run) if isinstance(n, ast.Call)
+                     and ast.unparse(n.func).endswith("write_action_run"))
+        early = [(name, line) for name, line in self.banned_calls_in(run)
+                 if line < write]
+        self.assertEqual(
+            early, [],
+            f"{path.name}:_run performs I/O before the audit write "
+            f"(line {write}): {early}")
+
     def test_no_io_sits_between_the_audit_write_and_the_lock_release(self):
         tree, path = self.source()
         run = next(n for n in ast.walk(tree)
@@ -1042,3 +1100,106 @@ class TestTheModuleObeysItsOwnIORule(unittest.TestCase):
             f"{path.name}:_run performs I/O between the audit write "
             f"(line {writes[0]}) and the lock release (line "
             f"{releases[0]}): {trapped}. Log it after the release.")
+
+
+class TestEpermLoggingOnTheKillPathCannotWedgeTheRunner(StalledStderrCase):
+    """`_kill_group`'s EPERM diagnostics, which round 5 flagged and left.
+
+    I framed the trigger as a narrow conjunction -- a cancel arriving
+    before `Popen()` returns, *and* a failed dispatch, *and* a stalled
+    stderr. The first conjunct is not narrow at all: `start()` followed
+    by `cancel()` takes the worker's pre-emptive path essentially always,
+    because the caller holds the GIL while the freshly started worker
+    waits to be scheduled, and `shutdown()` *is* `cancel()` then
+    `wait()`. Nor is the second: this module's own docstring calls EPERM
+    "the expected outcome for the one privileged action this console
+    ships".
+
+    And it is the worst of the family, not the mildest. `_kill_group`
+    runs on the worker **before** the audit write, so a stall there does
+    not delay the row -- it loses it, and holds the run lock forever.
+    That is property 1 of the module docstring, not property 3.
+
+    EPERM is simulated by patching `os.killpg` in the child: this suite
+    never runs a privileged command, and a real EPERM would need one.
+    Signal 0 is passed through, since `_group_is_dead` uses it to probe.
+    """
+
+    def test_a_cancel_right_after_start_still_audits_and_frees_the_lock(self):
+        pid_file = Path(self.enterContext(tempfile.TemporaryDirectory())) / "pid"
+
+        def cleanup():
+            try:
+                os.killpg(int(pid_file.read_text().strip()), signal.SIGKILL)
+            except (FileNotFoundError, ValueError, ProcessLookupError,
+                    PermissionError):
+                pass
+
+        self.addCleanup(cleanup)
+
+        # timeout_seconds=1 puts the module's own worst case at
+        # 1 + KILL_GRACE_SECONDS (2) + READ_BOUND_SECONDS (5) = 8s. The
+        # child survives the kill (that is what EPERM means), so the run
+        # ends by running out that bound.
+        reported = self.run_child(f"""
+            real_killpg = os.killpg
+            def eperm(pgid, sig):
+                if sig in (signal.SIGTERM, signal.SIGKILL):
+                    raise PermissionError(1, "Operation not permitted")
+                return real_killpg(pgid, sig)
+            import signal
+            os.killpg = eperm
+
+            rows = []
+            class Store:
+                def write_action_run(self, *a, **k):
+                    rows.append(a)
+
+            action = Action("t.eperm", ("/bin/sh", "-c",
+                            "echo $$ > {pid_file}; exec sleep 25"),
+                            root=False, risk=Risk.SAFE)
+            runner = ActionRunner(Store(), timeout_seconds=1)
+            runner.start(action, "127.0.0.1", lambda event: None)
+            # On its own thread only so this one can still report: a
+            # cancel() that blocks in _log_error takes its caller with it.
+            threading.Thread(target=runner.cancel, daemon=True).start()
+
+            t0 = time.monotonic()
+            freed = None
+            while time.monotonic() - t0 < 40:
+                if not runner.is_busy():
+                    freed = time.monotonic() - t0
+                    break
+                time.sleep(0.02)
+            print("FREED " + (str(round(freed, 3)) if freed is not None
+                              else "NEVER"), file=out)
+            print("ROWS %d" % len(rows), file=out)
+            t1 = time.monotonic()
+            done = threading.Thread(target=runner.shutdown, args=(10,),
+                                    daemon=True)
+            done.start(); done.join(20)
+            print("SHUTDOWN " + ("%.3f" % (time.monotonic() - t1)
+                                 if not done.is_alive() else "NEVER"),
+                  file=out)
+            os._exit(0)
+        """)
+
+        self.assertNotEqual(
+            reported["FREED"], "NEVER",
+            "the run lock was never released: the worker is blocked "
+            "writing an EPERM message to a stalled stderr, on the "
+            "pre-emptive cancel path -- before the audit write, so the "
+            "row is lost outright rather than merely delayed")
+        self.assertEqual(
+            reported["ROWS"], "1",
+            "no audit row was written at all -- the worker never got "
+            "past _kill_group")
+        self.assertLess(
+            float(reported["FREED"]), 12.0,
+            f"took {reported['FREED']}s, past the module's own 8s bound "
+            "for timeout_seconds=1")
+        self.assertNotEqual(
+            reported["SHUTDOWN"], "NEVER",
+            "shutdown() never returned: cancel() is blocked in the same "
+            "EPERM message, breaking the bound the HTTP wiring relies on "
+            "before store.close()")

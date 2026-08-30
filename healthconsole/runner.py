@@ -23,8 +23,9 @@ is to get them wrong:
 3. THE RULE, in the only form that has survived a review:
 
        No I/O of any kind -- including this module's own logging --
-       under `_cv` or `_OutputBuffer._lock`, and none between the audit
-       write and `self._lock.release()`.
+       under `_cv` or `_OutputBuffer._lock`, and none on the worker
+       thread from the moment it takes the run lock until it releases
+       it. Queue it (`_defer_error`) and write it afterwards.
 
    Read that as a grep, not as an argument. It is checkable by looking
    at five lines. Every earlier wording of it required reasoning about
@@ -40,6 +41,13 @@ is to get them wrong:
      reader's queue-drop path. A write to a stderr nobody is draining
      is an unbounded wait -- a full pipe blocks forever -- so that left
      the reader holding the very mutex the worker takes in `close()`.
+   - and `_kill_group`'s EPERM diagnostics, on the worker's pre-emptive
+     cancel path. An earlier wording of this rule said "between the
+     audit write and the release", which excluded them; that was the
+     wrong boundary, because a stall *before* the write loses the row
+     outright instead of merely delaying it, and `start()` immediately
+     followed by `cancel()` -- which is what `shutdown()` is -- reaches
+     that path essentially always.
 
    Each is the same thing: an unbounded wait reachable from the thread
    that owes the world an audit row. Only three categories can produce
@@ -133,9 +141,27 @@ def _log(message: str) -> None:
 
 def _log_error(message: str) -> None:
     """_log, plus the traceback of the exception being handled. Only
-    valid from inside an `except` block; use _log elsewhere."""
+    valid from inside an `except` block; use _log elsewhere.
+
+    Never call this from anywhere that can run on the worker thread
+    before the audit write -- use `_defer_error` instead. See the module
+    docstring's property 3.
+    """
     _log(message)
     traceback.print_exc(file=sys.stderr)
+
+
+def _defer_error(run: _Run, message: str) -> None:
+    """Format a diagnostic now, write it out later.
+
+    For code that can run on the worker thread before the audit write,
+    where `_log_error` would be an unbounded wait in the one position
+    that loses the row rather than delaying it (`_kill_group`, reached
+    from `_run`'s pre-emptive cancel). `_run` flushes these after it has
+    released the run lock. Only valid from inside an `except` block.
+    """
+    run.deferred_logs.append(
+        f"{message}\n{traceback.format_exc().rstrip()}")
 
 
 def _kill_group(process: subprocess.Popen, grace: float,
@@ -192,7 +218,7 @@ def _kill_group(process: subprocess.Popen, grace: float,
     except OSError as exc:
         # Not evidence that the process is gone, so the attempt stands
         # and the row will say it could not be confirmed stopped.
-        _log_error(f"could not resolve the process group id: {exc}")
+        _defer_error(run, f"could not resolve the process group id: {exc}")
         return
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -208,7 +234,8 @@ def _kill_group(process: subprocess.Popen, grace: float,
         # outcome for the one privileged action this console ships, not
         # a bug to let propagate into the caller. The attempt was real
         # and the row should say so.
-        _log_error(f"could not send SIGTERM to the process group: {exc}")
+        _defer_error(
+            run, f"could not send SIGTERM to the process group: {exc}")
         return
     try:
         process.wait(grace)
@@ -220,7 +247,8 @@ def _kill_group(process: subprocess.Popen, grace: float,
     except ProcessLookupError:
         return
     except OSError as exc:
-        _log_error(f"could not send SIGKILL to the process group: {exc}")
+        _defer_error(
+            run, f"could not send SIGKILL to the process group: {exc}")
         return
     try:
         process.wait(grace)
@@ -501,6 +529,18 @@ class _Run:
     # out -- a caller setting it from a return value is racing the
     # audit write, and loses (see the comment at the assignment).
     kill_attempted: bool = False
+    # Diagnostics from _kill_group, queued rather than written where
+    # they happen. _kill_group runs on three threads: the worker's
+    # (the pre-emptive cancel, *before* the audit write), the
+    # watchdog's Timer, and the caller's own inside cancel() and
+    # therefore shutdown(). Writing to stderr is an unbounded wait, and
+    # on the first of those it holds the run lock with no row written
+    # at all -- worse than any wedge rounds 1-5 fixed, and measured:
+    # a cancel() straight after start() takes that path essentially
+    # always, because the caller holds the GIL while the freshly
+    # started worker waits to be scheduled. _run flushes these after
+    # self._lock.release(); see _defer_error.
+    deferred_logs: list[str] = field(default_factory=list)
 
 
 def _drain(stream, buffer: _OutputBuffer, events: _EventStream,
@@ -930,6 +970,13 @@ class ActionRunner:
                 # cannot be audited must still not wedge the next one.
                 self._current = None
                 self._lock.release()
+            for message in list(run.deferred_logs):
+                # Queued by _kill_group on the worker's own pre-audit
+                # path, on the watchdog's thread, or on whoever called
+                # cancel(). Written here, after the release, where a
+                # stalled stderr costs this thread and a wait() joining
+                # it -- both bounded -- and not the row.
+                _log(message)
             if write_failure is not None:
                 # After the release, deliberately. A stalled stderr can
                 # now cost this worker thread (and a wait() that is

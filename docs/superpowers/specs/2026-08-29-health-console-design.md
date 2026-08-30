@@ -372,6 +372,12 @@ noise patterns, and reports only a pattern that is **new** or whose frequency is
 
 ## 8. Action catalogue
 
+**Note on current implementation:** This section describes the complete destination.
+B1 implements the execution machinery and one action, `apt.refresh`. The remaining
+twelve actions in §8.2 await probes for updates, services, storage, SMART and
+journal that were designed but not written. See `2026-08-30-action-catalogue-b1-design.md`
+for what exists and what remains.
+
 ### 8.1 Principle
 
 There is **no "run this command" route**. Every action is declared in code:

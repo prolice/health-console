@@ -91,6 +91,7 @@ Other commands:
 ./bin/health-console prune           # apply the configured retention immediately
 ./bin/health-console token           # show the configured token, if any
 ./bin/health-console token --rotate  # generate one and store it in config.toml
+./bin/health-console sudoers         # render the sudoers rule and print it; does not install
 ```
 
 Configuration lives at `~/.config/health-console/config.toml` (created on
@@ -122,6 +123,9 @@ deploying it anywhere else.
 - **It runs privileged commands.** APT upgrades, service restarts, machine shutdown.
   Installation writes a `sudoers.d` rule restricted to a named list of binaries with
   fixed arguments — never `ALL`, never a wildcard.
+- **The sudoers `NOPASSWD` rule is granted to a user account, not to this program.**
+  Once installed, any process running as that user can run those exact commands
+  without a password — a script, a browser extension, a compromised dependency.
 - **There is no "run this command" route.** The action catalogue is declared in code;
   the browser sends an identifier, never a command fragment. `shell=False`, and no
   text from the network is interpolated into an argument list.

@@ -22,6 +22,8 @@ let interfaceTextUnavailable = false;
 
 export function lastKnownState() { return lastState; }
 
+export function noteState(state) { lastState = state; }
+
 export function setInterfaceTextUnavailable() {
   interfaceTextUnavailable = true;
 }
@@ -74,10 +76,7 @@ export function connect({ onState, onFreshness }) {
   source.addEventListener("state", (event) => {
     lastUpdate = Date.now();
     isStale = false;
-    const state = JSON.parse(event.data);
-    lastState = state;
-    onState(state);
-    onFreshness(isMeasurementStale(state));
+    onState(JSON.parse(event.data));
   });
   source.addEventListener("error", () => {
     isStale = true;

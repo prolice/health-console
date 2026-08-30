@@ -2,11 +2,11 @@
 
 import { el } from "./dom.js";
 import {
-  adoptTokenFromUrl, authHeaders, loadFallback, pickLocale, setLocale,
-  translate, whenLocaleChanges,
+  adoptTokenFromUrl, authHeaders, formatBytes, loadFallback, pickLocale,
+  setLocale, translate, whenLocaleChanges,
 } from "./i18n.js";
-import { connect, lastKnownState, markFreshness,
-         setInterfaceTextUnavailable } from "./stream.js";
+import { connect, isMeasurementStale, lastKnownState, markFreshness,
+         noteState, setInterfaceTextUnavailable } from "./stream.js";
 import { renderSimple } from "./simple.js";
 
 const DEFAULT_MODE = "simple";
@@ -30,7 +30,11 @@ function switchMode(mode) {
   localStorage.setItem("mode", mode);
 }
 
-function render(state) { renderSimple(state); }
+function render(state) {
+  noteState(state);
+  renderSimple(state);
+  markFreshness(isMeasurementStale(state));
+}
 
 async function start() {
   adoptTokenFromUrl();
@@ -66,5 +70,5 @@ async function start() {
   connect({ onState: render, onFreshness: markFreshness });
 }
 
-globalThis.healthConsole = { render, setLocale };
+globalThis.healthConsole = { translate, render, setLocale, formatBytes };
 start();

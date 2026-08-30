@@ -45,9 +45,10 @@ RAW_TABLE_MAX_SECONDS = 172_800
 # Under plain `default-src 'self'` the browser blocks both as an img-src
 # violation and drops them silently: the accordion and language selector
 # still work, they just render with no icon. This widening is images only —
-# script-src and style-src are untouched, and a data: SVG loaded through
-# img-src is decoded as a raster image, not executed, so it cannot run
-# script. Do not narrow this back to `default-src 'self'` alone.
+# script-src and style-src are untouched, and an SVG referenced as an image
+# renders in a restricted mode where scripts, external references and
+# interaction are all inert, so a data: URI here cannot execute anything.
+# Do not narrow this back to `default-src 'self'` alone.
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:",
     "X-Content-Type-Options": "nosniff",

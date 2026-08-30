@@ -74,6 +74,16 @@
 .freshness.stale { color: var(--hc-attention); font-weight: 600; }
 body.stale .view { opacity: 0.45; }
 
+.risk-badge { font-weight: 600; font-size: 0.85rem; white-space: nowrap; }
+.risk-safe      { color: var(--hc-ok); }
+.risk-medium    { color: var(--hc-attention); }
+.risk-sensitive { color: var(--hc-urgent); }
+
+#action-output {
+  max-height: 260px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+
 .chart-holder { position: relative; height: 200px; }
 .sparkline-holder { position: relative; height: 44px; margin-top: 0.5rem; }
 

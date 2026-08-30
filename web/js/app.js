@@ -10,6 +10,8 @@ import { connect, isMeasurementStale, lastKnownState, markFreshness,
 import { forceGaugeRedraw, renderSimple } from "./simple.js";
 import { paintRangeControl, redrawCharts, renderExpert } from "./expert.js";
 import { clearCache } from "./history.js";
+import { onActionEvent, paintActionsChrome, renderActions,
+         renderAuditTable } from "./actions.js";
 
 const DEFAULT_MODE = "simple";
 
@@ -46,6 +48,7 @@ function paintChrome() {
   el("mode-simple").textContent = translate("ui.mode.simple");
   el("mode-expert").textContent = translate("ui.mode.expert");
   el("mode-group").setAttribute("aria-label", translate("ui.mode.group"));
+  paintActionsChrome();
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
   el("theme-group").setAttribute("aria-label", translate("ui.theme.label"));
@@ -60,17 +63,22 @@ function paintChrome() {
 
 function switchMode(mode) {
   const simple = mode === "simple";
+  const expert = mode === "expert";
+  const actions = mode === "actions";
   el("simple").hidden = !simple;
-  el("expert").hidden = simple;
+  el("expert").hidden = !expert;
+  el("actions").hidden = !actions;
   el("mode-simple").setAttribute("aria-selected", String(simple));
-  el("mode-expert").setAttribute("aria-selected", String(!simple));
+  el("mode-expert").setAttribute("aria-selected", String(expert));
+  el("mode-actions").setAttribute("aria-selected", String(actions));
   // Bootstrap styles .btn.active, never [aria-selected="true"]: without
   // this the tab was correctly announced but visually identical either
   // way. Matches applyTheme()/paintRangeButtons(), which already do this.
   el("mode-simple").classList.toggle("active", simple);
-  el("mode-expert").classList.toggle("active", !simple);
+  el("mode-expert").classList.toggle("active", expert);
+  el("mode-actions").classList.toggle("active", actions);
   localStorage.setItem("mode", mode);
-  if (!simple) {
+  if (expert) {
     // render() only calls renderExpert() while #expert is already visible,
     // so the state from the very first /api/now response -- which arrived
     // while Expert was still hidden -- was never painted into the tiles,
@@ -85,6 +93,14 @@ function switchMode(mode) {
     // expert.js).
     redrawCharts();
   }
+  if (actions) {
+    // Neither call depends on the SSE state stream, so (unlike Expert)
+    // there is nothing already noted to paint from -- both go straight to
+    // the server, refreshing the catalogue's availability and the audit
+    // log every time this tab is entered.
+    renderActions();
+    renderAuditTable();
+  }
 }
 
 function render(state) {
@@ -98,6 +114,7 @@ async function start() {
   adoptTokenFromUrl();
   el("mode-simple").addEventListener("click", () => switchMode("simple"));
   el("mode-expert").addEventListener("click", () => switchMode("expert"));
+  el("mode-actions").addEventListener("click", () => switchMode("actions"));
   el("locale").addEventListener("change", (event) =>
     setLocale(event.target.value));
   el("refresh").addEventListener("click", () => {
@@ -180,6 +197,13 @@ async function start() {
       "Interface text failed to load. Please reload the page.";
   }
   connect({ onState: render, onFreshness: markFreshness });
+  // A second connection to the same route rather than a new event type on
+  // stream.js's: that module already demultiplexes and buffers "state"
+  // events for the freshness banner, and the server multiplexes "state"
+  // and "action" onto one /api/stream route regardless of how many times a
+  // browser connects to it -- so this need not touch stream.js at all.
+  new EventSource("/api/stream").addEventListener("action",
+    (event) => onActionEvent(JSON.parse(event.data)));
 }
 
 globalThis.healthConsole = { translate, render, setLocale, formatBytes };

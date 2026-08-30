@@ -110,7 +110,7 @@ class TestIndex(unittest.TestCase):
         self.assertIn('aria-controls="expert"', self.html)
         self.assertIn('aria-labelledby="mode-simple"', self.html)
         self.assertIn('aria-labelledby="mode-expert"', self.html)
-        self.assertEqual(self.html.count('role="tabpanel"'), 2)
+        self.assertEqual(self.html.count('role="tabpanel"'), 3)
 
 
 class TestBootstrapShell(unittest.TestCase):
@@ -141,6 +141,27 @@ class TestBootstrapShell(unittest.TestCase):
 
     def test_the_expert_placeholder_paragraph_is_gone(self):
         self.assertNotIn('id="expert-placeholder"', self.html)
+
+
+class TestActionsTab(unittest.TestCase):
+    def setUp(self):
+        self.html = read("index.html")
+
+    def test_a_third_tab_exists_and_is_wired_to_its_panel(self):
+        self.assertIn('id="mode-actions"', self.html)
+        self.assertIn('aria-controls="actions"', self.html)
+        self.assertIn('aria-labelledby="mode-actions"', self.html)
+        self.assertEqual(self.html.count('role="tabpanel"'), 3)
+
+    def test_the_action_containers_are_present(self):
+        for element_id in ("action-list", "action-output", "audit-table"):
+            self.assertIn(f'id="{element_id}"', self.html)
+
+    def test_risk_is_never_colour_alone(self):
+        source = js("actions.js")
+        self.assertIn("risk.${", source)
+        self.assertIn(".icon", source)
+        self.assertIn(".word", source)
 
 
 class TestNoInlineStyleInCode(unittest.TestCase):

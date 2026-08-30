@@ -14,13 +14,15 @@ import secrets
 import sqlite3
 import threading
 import time
+from collections import deque
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from healthconsole.actions import CATALOGUE
+from healthconsole.actions import CATALOGUE, Action
 from healthconsole.config import Config
+from healthconsole.runner import ActionBusy, ActionRunner
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -121,8 +123,9 @@ def session_cookie_header(token: str) -> str:
     return f"{SESSION_COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/"
 
 
-def make_server(cfg: Config, scheduler,
-                web_dir: Path = WEB_DIR) -> ThreadingHTTPServer:
+def make_server(cfg: Config, scheduler, web_dir: Path = WEB_DIR, *,
+                runner: ActionRunner | None = None,
+                catalogue: dict[str, Action] = CATALOGUE) -> ThreadingHTTPServer:
 
     # cmd_run's shutdown sequence closes the listening socket
     # (server.server_close()) and only then closes the store -- but
@@ -138,6 +141,32 @@ def make_server(cfg: Config, scheduler,
     # covered separately -- see the try/except around the store calls in
     # _history below.
     shutdown_event = threading.Event()
+
+    # A bounded, shared feed of action events for /api/stream to relay as
+    # `event: action`. Kept small on purpose: a run's full output is
+    # already written to the audit row by ActionRunner, so this is a live
+    # view for whichever tab happens to be open, not a transcript. Each
+    # entry is (seq, event); seq is a simple increasing counter so a
+    # stream can remember how far it has read without destructively
+    # draining a queue that other, concurrent streams also need to see.
+    #
+    # ActionRunner's own docs (Task 3) are explicit that `on_event` can be
+    # called from more than one run's delivery thread at once -- is_busy()
+    # going false does not mean the previous run's "finished" has been
+    # delivered yet, so a new run's events and the tail of the old run's
+    # events can arrive here concurrently. Nothing above a plain lock is
+    # needed since this function only ever appends, but the lock is what
+    # makes that append/increment atomic across those threads.
+    ACTION_EVENT_QUEUE_MAX = 200
+    action_events_lock = threading.Lock()
+    action_events: deque[tuple[int, dict]] = deque(maxlen=ACTION_EVENT_QUEUE_MAX)
+    action_seq = 0
+
+    def broadcast_action(event: dict) -> None:
+        nonlocal action_seq
+        with action_events_lock:
+            action_seq += 1
+            action_events.append((action_seq, event))
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -321,10 +350,24 @@ def make_server(cfg: Config, scheduler,
                 for name, value in (extra_headers or {}).items():
                     self.send_header(name, value)
                 self.end_headers()
+                # Only events broadcast from here on: a tab that opens
+                # mid-run sees the run's progress going forward, not a
+                # replay of everything still sitting in the bounded
+                # queue -- the audit row is where history lives.
+                with action_events_lock:
+                    last_action_seq = action_seq
                 while True:
                     payload = json.dumps(scheduler.state())
                     self.wfile.write(b"event: state\n")
                     self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    with action_events_lock:
+                        pending = [item for item in action_events
+                                  if item[0] > last_action_seq]
+                    for seq, event in pending:
+                        last_action_seq = seq
+                        self.wfile.write(b"event: action\n")
+                        self.wfile.write(
+                            f"data: {json.dumps(event)}\n\n".encode("utf-8"))
                     self.wfile.flush()
                     time.sleep(cfg.sampling.live_seconds)
             except (BrokenPipeError, ConnectionResetError):
@@ -381,6 +424,46 @@ def make_server(cfg: Config, scheduler,
         # already omits the body for self.command == "HEAD", so sharing
         # do_GET's routing is all that is needed.
         do_HEAD = do_GET
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            authorised, handoff = self._authorised(query)
+            if not authorised:
+                return self._error(401, "token_required", "")
+            extra = ({"Set-Cookie": session_cookie_header(handoff)}
+                     if handoff else None)
+
+            prefix = "/api/actions/"
+            if not parsed.path.startswith(prefix):
+                return self._error(404, "unknown_route", parsed.path)
+
+            # Reading is open to the LAN behind a token; acting is not. A
+            # token proves who you are, not that you are sitting at this
+            # machine, and the two do not carry the same cost when wrong.
+            if not is_loopback(self.client_address[0]) \
+                    and not cfg.allow_remote_actions:
+                return self._error(403, "remote_actions_refused", "")
+
+            # Resolved against the catalogue this server was built with --
+            # never the module-level lookup() -- so a test can swap in a
+            # harmless catalogue instead of shelling out to apt-get.
+            action = catalogue.get(parsed.path[len(prefix):])
+            if action is None:
+                return self._error(404, "unknown_action", "")
+
+            if runner is None:
+                # Should not happen in production -- cli.py always wires
+                # one in -- but a server built without one (as most tests
+                # here are) must refuse cleanly rather than raise.
+                return self._error(503, "runner_unavailable", "")
+
+            try:
+                run_id = runner.start(action, self.client_address[0],
+                                      broadcast_action)
+            except ActionBusy:
+                return self._error(409, "action_busy", "")
+            return self._json(202, {"run_id": run_id}, extra)
 
     server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)
     server.daemon_threads = True

@@ -25,6 +25,7 @@ from healthconsole.config import (
     DEFAULT_CONFIG_PATH, ConfigError, estimate_db_bytes, load_config,
 )
 from healthconsole.ring import Ring
+from healthconsole.runner import ActionRunner
 from healthconsole.scheduler import Scheduler
 from healthconsole.server import WEB_DIR, generate_token, is_loopback, make_server
 from healthconsole.store import Store
@@ -306,7 +307,8 @@ def _tick_once(scheduler, cfg, last_flush, last_maintain, now=None):
 
 def cmd_run(cfg) -> int:
     store, scheduler = _open(cfg)
-    server = make_server(cfg, scheduler, WEB_DIR)
+    runner = ActionRunner(store)
+    server = make_server(cfg, scheduler, WEB_DIR, runner=runner)
     stop = threading.Event()
 
     def loop():
@@ -356,6 +358,17 @@ def cmd_run(cfg) -> int:
         # covered separately, by the try/except in server.py's _history.
         server.shutdown_event.set()
         thread.join(timeout=5)
+        # Must run, and be given time to finish, before store.close()
+        # below: a run still in flight would otherwise write its audit
+        # row into a closed database (sqlite3.ProgrammingError), and a
+        # privileged child process would be left running past the
+        # console's own exit. cancel() inside this can block for a few
+        # seconds (SIGTERM, a confirmation wait, SIGKILL, another wait)
+        # if a run is actually in flight -- see ActionRunner.shutdown's
+        # docstring -- which is why this happens after the listening
+        # socket and the collection thread are already stopped, not
+        # concurrently with them.
+        runner.shutdown()
         store.close()
     return 0
 

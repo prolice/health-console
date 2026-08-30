@@ -5,11 +5,14 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from healthconsole.actions import Action, Risk
 from healthconsole.config import Config
 from healthconsole.ring import Ring
+from healthconsole.runner import ActionRunner
 from healthconsole.scheduler import Scheduler
 from healthconsole.server import (
     authorise, cookie_token, generate_token, is_loopback, make_server,
@@ -142,9 +145,11 @@ class TestHttp(unittest.TestCase):
     def test_unsupported_method_still_gets_security_headers_and_json(self):
         # The base class handles unknown verbs itself, before our routing
         # ever runs -- that path must not bypass the security headers or
-        # fall back to an HTML body.
+        # fall back to an HTML body. PUT, not POST: POST is now a real verb
+        # (it starts a catalogue action), so it no longer exercises this
+        # path -- see TestActionPost for POST's own routing.
         request = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+            f"http://127.0.0.1:{self.port}/api/now", method="PUT")
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(request, timeout=5)
         self.assertEqual(ctx.exception.code, 501)
@@ -155,7 +160,7 @@ class TestHttp(unittest.TestCase):
 
     def test_error_response_carries_connection_close(self):
         request = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/api/now", method="POST")
+            f"http://127.0.0.1:{self.port}/api/now", method="PUT")
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(request, timeout=5)
         self.assertEqual(ctx.exception.headers["Connection"], "close")
@@ -310,6 +315,12 @@ class ServerCase(unittest.TestCase):
     def get_json(self, path):
         return json.loads(self.get_raw(path))
 
+    def get_status(self, path) -> int:
+        try:
+            return self.get(path).status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
 
 class TestActionReadRoutes(ServerCase):
     def test_the_catalogue_lists_every_action_with_its_risk(self):
@@ -453,6 +464,126 @@ class TestLanCookieHandoff(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(self.url("/api/now"), timeout=5)
         self.assertEqual(ctx.exception.code, 401)
+
+
+class TestActionPost(ServerCase):
+    """A harmless two-entry catalogue built on /bin/true and /bin/sleep --
+    never apt-get -- with a real ActionRunner wired in exactly as cli.py
+    wires one. `lookup()`/CATALOGUE are module-level globals with no
+    injection seam, so this exercises make_server's own `catalogue` and
+    `runner` keyword parameters instead of monkeypatching a global that
+    would leak between tests.
+
+    Builds its server lazily, on the first request a test makes, so a
+    test can adjust `self.cfg` (allow_remote_actions, in particular)
+    beforehand. Each test gets its own Store/Scheduler/ActionRunner/server
+    from setUp -- unlike the class-shared server in ServerCase above --
+    because busy-state (one test posts twice) must persist across calls
+    within a test, but must not leak into the next one.
+    """
+
+    TEST_CATALOGUE = {
+        "t.true": Action(id="t.true", argv=("/bin/true",), root=False,
+                         risk=Risk.SAFE),
+        "t.sleep": Action(id="t.sleep", argv=("/bin/sleep", "2"),
+                          root=False, risk=Risk.SAFE),
+    }
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.scheduler = Scheduler(Config(), self.store, Ring())
+        self.scheduler.tick(now=1000.0)
+        self.runner = ActionRunner(self.store)
+        # A token is configured even though every test here connects over
+        # real loopback: the off-loopback tests simulate a LAN client by
+        # patching is_loopback (see post()), and authorise() then needs a
+        # real token/header pair to succeed before the action-specific
+        # loopback gate is ever reached.
+        self.cfg = Config(bind="127.0.0.1", port=0, token="s3cr3t")
+        self.server = None
+
+    def tearDown(self):
+        # Ends any run still in flight (t.sleep) before the store closes
+        # under it -- the same ordering cmd_run's shutdown path must
+        # follow (see cli.py). cancel() inside shutdown() is a no-op, not
+        # an error, when nothing is running.
+        self.runner.shutdown(timeout=5)
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        self.store.close()
+
+    def _ensure_server(self):
+        if self.server is not None:
+            return
+        self.server = make_server(
+            self.cfg, self.scheduler, WEB_DIR,
+            runner=self.runner, catalogue=self.TEST_CATALOGUE)
+        self.port = self.server.server_address[1]
+        threading.Thread(
+            target=self.server.serve_forever, daemon=True).start()
+
+    def get(self, path):
+        self._ensure_server()
+        return super().get(path)
+
+    def post(self, path, client_ip=None):
+        self._ensure_server()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", method="POST")
+        request.add_header("X-Health-Token", self.cfg.token)
+        # Real sockets in this suite all connect over 127.0.0.1; a
+        # non-loopback client is simulated the same way TestLanCookieHandoff
+        # does it above, by patching is_loopback for the request rather than
+        # standing up an actual remote socket.
+        patcher = None
+        if client_ip is not None:
+            patcher = mock.patch("healthconsole.server.is_loopback",
+                                 return_value=False)
+            patcher.start()
+        try:
+            try:
+                response = urllib.request.urlopen(request, timeout=5)
+                return response.status, json.loads(response.read())
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read())
+        finally:
+            if patcher is not None:
+                patcher.stop()
+
+    def test_an_unknown_action_is_refused(self):
+        status, body = self.post("/api/actions/rm.everything")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "unknown_action")
+
+    def test_a_known_action_is_accepted_and_returns_a_run_id(self):
+        status, body = self.post("/api/actions/t.true")
+        self.assertEqual(status, 202)
+        self.assertTrue(body["run_id"])
+
+    def test_a_second_action_while_one_runs_is_refused(self):
+        self.post("/api/actions/t.sleep")
+        status, body = self.post("/api/actions/t.true")
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"], "action_busy")
+
+    def test_an_action_from_off_loopback_is_refused_by_default(self):
+        # Reading and acting do not carry the same cost when you get it
+        # wrong: a token is enough to read, never enough to act.
+        status, body = self.post("/api/actions/t.true",
+                                 client_ip="192.168.0.3")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "remote_actions_refused")
+
+    def test_off_loopback_is_allowed_when_configured(self):
+        self.cfg = replace(self.cfg, allow_remote_actions=True)
+        status, _ = self.post("/api/actions/t.true", client_ip="192.168.0.3")
+        self.assertEqual(status, 202)
+
+    def test_get_on_the_action_route_is_not_a_way_to_run_it(self):
+        # A route that acts must not be reachable by a link, a prefetch or
+        # a crawler.
+        self.assertEqual(self.get_status("/api/actions/t.true"), 404)
 
 
 if __name__ == "__main__":

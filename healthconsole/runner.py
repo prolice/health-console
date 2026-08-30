@@ -122,7 +122,7 @@ def _log_error(message: str) -> None:
 
 
 def _kill_group(process: subprocess.Popen, grace: float,
-                run: "_Run") -> None:
+                run: _Run) -> None:
     """Terminate a process and everything in its process group.
 
     `start_new_session=True` at Popen time makes `process.pid` the

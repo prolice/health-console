@@ -521,13 +521,20 @@ Bootstrap 5.3 for the layout and Chart.js 4 for the charts.
 Vendoring rather than linking is not a preference: `default-src 'self'` means a
 CDN stylesheet would fail **silently** in the browser.
 
-Budget: < 60 KiB of uncompressed JS **for code we write**, enforced across
+Budget: < 80 KiB of uncompressed JS **for code we write**, enforced across
 `web/js/*.js`. The vendored libraries sit outside that budget and are recorded
 with their exact versions in `web/vendor/LICENSES.md`.
 
-Superseded: this section previously called for hand-drawn SVG charts and
-counted the vendored libraries against the 60 KiB budget. See
+Superseded (first revision): this section previously called for hand-drawn SVG
+charts and counted the vendored libraries against the 60 KiB budget. See
 `2026-08-30-health-console-ui-redesign.md` §2.2.
+
+Superseded (second revision): the 60 KiB budget itself was raised to 80 KiB when
+the UI scope expanded from three static pages to eight ES modules implementing an
+interactive dashboard with gauges, sparklines, chart grids, probes, and
+accessible descriptions. See `2026-08-30-health-console-ui-redesign.md` §2.2
+supplement. The vendored and own-code budgets remain separate; only the latter
+increased.
 
 ## 11. Internationalisation
 

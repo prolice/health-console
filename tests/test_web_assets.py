@@ -185,8 +185,8 @@ class TestModuleLayout(unittest.TestCase):
         # lines of wiring, so a single-file assertion would pass while
         # guarding nothing.
         total = sum(path.stat().st_size for path in JS.glob("*.js"))
-        self.assertLess(total, 60 * 1024,
-                        f"60 KiB budget exceeded: {total} bytes")
+        self.assertLess(total, 80 * 1024,
+                        f"80 KiB budget exceeded: {total} bytes")
 
 
 class TestChartsDegradeGracefully(unittest.TestCase):

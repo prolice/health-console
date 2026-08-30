@@ -8,11 +8,13 @@ interface.
 from __future__ import annotations
 
 import argparse
-import getpass
+import os
+import pwd
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -182,16 +184,34 @@ def cmd_sudoers(cfg, config_path, rotate) -> int:
     it.
 
     This is the console's only interaction with /etc/sudoers.d, and it
-    stops short of touching /etc at all: the file is written under
-    packaging/, checked with whatever `visudo` is on PATH, and the exact
-    install command is printed for the operator to run themselves. There
-    is no flag here that writes to /etc, and there must never be one: an
-    install mode that exists but goes unused is still an install mode
-    someone will eventually use.
+    stops short of touching /etc at all: the file is validated under a
+    temporary name, only ever copied into packaging/ once `visudo` has
+    accepted it, and the exact install command is printed for the operator
+    to run themselves. There is no flag here that writes to /etc, and
+    there must never be one: an install mode that exists but goes unused
+    is still an install mode someone will eventually use.
+
+    The account name comes from `pwd.getpwuid(os.getuid())`, never from
+    `getpass.getuser()` (which reads $LOGNAME / $USER verbatim, before it
+    ever consults the password database) -- the whole point of this
+    command is to defend the machine against exactly the kind of
+    environment-controlled string that would otherwise flow straight into
+    a sudoers rule.
+
+    `--rotate` means nothing here (there is no token to rotate) and is
+    refused rather than silently ignored.
     """
-    text = render_sudoers(getpass.getuser())
-    SUDOERS_DEST.parent.mkdir(parents=True, exist_ok=True)
-    SUDOERS_DEST.write_text(text, encoding="utf-8")
+    if rotate:
+        print("'sudoers' has no '--rotate': there is no token to rotate "
+              "here.", file=sys.stderr)
+        return 2
+
+    user = pwd.getpwuid(os.getuid()).pw_name
+    try:
+        text = render_sudoers(user)
+    except ValueError as exc:
+        print(f"Refusing to render a sudoers rule: {exc}", file=sys.stderr)
+        return 1
 
     # Resolved at runtime, never hard-coded: this machine's visudo is
     # sudo-rs's reimplementation, reached through /etc/alternatives, and a
@@ -199,19 +219,31 @@ def cmd_sudoers(cfg, config_path, rotate) -> int:
     # the one whose opinion of this file matters.
     visudo = shutil.which("visudo")
     if visudo is None:
-        print(f"Wrote {SUDOERS_DEST}, but no 'visudo' is on PATH: cannot "
-              "validate it.", file=sys.stderr)
+        print("No 'visudo' is on PATH: cannot validate the rendered rule.",
+              file=sys.stderr)
         print("Install sudo (or sudo-rs) and rerun before trusting this "
               "file.", file=sys.stderr)
         return 1
 
-    result = subprocess.run([visudo, "-c", "-f", str(SUDOERS_DEST)],
-                             capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"Wrote {SUDOERS_DEST}, but visudo -c rejected it:",
-              file=sys.stderr)
-        print((result.stdout + result.stderr).strip(), file=sys.stderr)
-        return 1
+    # Validate a throwaway copy before SUDOERS_DEST is touched at all. A
+    # previous successful run may have left a *valid* file there, already
+    # copied into an operator's runbook as the install source; a rejected
+    # render must never overwrite it with text `visudo -c` refused.
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".sudoers", delete=False)
+    try:
+        handle.write(text)
+        handle.close()
+        result = subprocess.run([visudo, "-c", "-f", handle.name],
+                                 capture_output=True, text=True)
+        if result.returncode != 0:
+            print("visudo -c rejected the rendered rule:", file=sys.stderr)
+            print((result.stdout + result.stderr).strip(), file=sys.stderr)
+            return 1
+        SUDOERS_DEST.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(handle.name, SUDOERS_DEST)
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
 
     print(text)
     print(f"Written to  : {SUDOERS_DEST}")

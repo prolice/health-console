@@ -19,9 +19,31 @@ sudo-rs supports a subset of the classic sudoers grammar. This module stays
 in the plainest possible form it accepts -- `user ALL=(root) NOPASSWD:
 /absolute/path arg1 arg2` -- and uses no alias, no Defaults line, no
 wildcard and never `ALL` as a command.
+
+Both interpolated values are validated before a single line is built, and
+`render()` raises rather than emit anything on a rejection:
+
+- `user` must be a plain POSIX login name, and never the literal `ALL`.
+  A username is not safe input just because it usually looks like one --
+  `getpass.getuser()` (not called here; see cli.py) returns `$LOGNAME` /
+  `$USER` verbatim, and a value such as
+  ``prolice ALL=(ALL) NOPASSWD: ALL #`` parses cleanly under sudo-rs and
+  replaces the intended rule with unrestricted root. The comment character
+  swallows the rest of the line; without it, a bare ``ALL`` still grants
+  every account on the machine while looking, at a glance, like a normal
+  username.
+- Every element of every root action's `argv` is validated the same way.
+  `CATALOGUE` is trusted data today, but this module renders whatever it
+  is given, and the sudoers grammar treats whitespace, `,`, `*`, `?`, `!`,
+  `=` and `\\` as syntax, not text: a comma silently grants a second
+  command, a space silently produces a rule that no longer matches what
+  the runner actually runs, and a newline can smuggle in a second,
+  complete rule of its own.
 """
 
 from __future__ import annotations
+
+import re
 
 from healthconsole.actions import CATALOGUE
 
@@ -40,17 +62,53 @@ HEADER = """\
 # wildcard, never ALL as a command.
 """
 
+# A plain POSIX login name: lower-case letters, digits, underscore and
+# hyphen, not starting with a digit or hyphen, at most 32 characters (the
+# usual system limit). Nothing sudoers would ever read specially.
+_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+
+# Characters the sudoers grammar treats specially wherever they appear in
+# a command or its arguments: whitespace (including newline) separates
+# tokens and can smuggle in a second rule; `,` separates list entries;
+# `*` and `?` are wildcards; `!` negates; `=` introduces a `Runas` or
+# `Defaults` binding; `\` escapes the character after it.
+_ARGV_UNSAFE_RE = re.compile(r"[\s,*?!=\\]")
+
+
+def _validate_user(user: str) -> None:
+    if user == "ALL" or not _USER_RE.fullmatch(user):
+        raise ValueError(
+            f"refusing to render a sudoers rule for {user!r}: not a plain "
+            "POSIX login name")
+
+
+def _validate_argv(argv: tuple[str, ...]) -> None:
+    if not argv or not argv[0].startswith("/"):
+        raise ValueError(
+            f"refusing to render a sudoers rule: argv[0] must be an "
+            f"absolute path, got {argv!r}")
+    for part in argv:
+        if _ARGV_UNSAFE_RE.search(part):
+            raise ValueError(
+                f"refusing to render a sudoers rule: unsafe argument "
+                f"{part!r} in {argv!r}")
+
 
 def render(user: str) -> str:
     """Build the sudoers file text for `user`.
 
     One NOPASSWD line per catalogue action with root=True, arguments
     included verbatim from `Action.argv`. Never a wildcard, never `ALL` as
-    a command.
+    a command -- enforced here, not merely by the shape of today's
+    catalogue: `user` and every element of every root action's `argv` are
+    validated, and a rejection raises `ValueError` rather than emitting
+    anything.
     """
+    _validate_user(user)
     lines = [HEADER]
     for action in sorted(
             (a for a in CATALOGUE.values() if a.root), key=lambda a: a.id):
+        _validate_argv(action.argv)
         command = " ".join(action.argv)
         lines.append(f"{user} ALL=(root) NOPASSWD: {command}")
     lines.append("")

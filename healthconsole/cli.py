@@ -8,7 +8,10 @@ interface.
 from __future__ import annotations
 
 import argparse
+import getpass
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -23,11 +26,19 @@ from healthconsole.ring import Ring
 from healthconsole.scheduler import Scheduler
 from healthconsole.server import WEB_DIR, generate_token, is_loopback, make_server
 from healthconsole.store import Store
+from healthconsole.sudoers import render as render_sudoers
 
 DATA_DIR = Path.home() / ".local" / "share" / "health-console"
 WARN_DB_BYTES = 500 * 1024 ** 2
 ASSUMED_METRIC_COUNT = 25
 SECONDS_PER_DAY = 86_400
+
+# packaging/sudoers.d/health-console, relative to the repository root --
+# never /etc. See cmd_sudoers: there is no code path anywhere in this
+# module that writes outside this directory.
+SUDOERS_DEST = (
+    Path(__file__).resolve().parent.parent / "packaging" / "sudoers.d"
+    / "health-console")
 
 
 def default_db_path() -> Path:
@@ -166,6 +177,52 @@ def cmd_token(cfg, config_path: Path, rotate: bool) -> int:
     return 0
 
 
+def cmd_sudoers(cfg, config_path, rotate) -> int:
+    """Render the sudoers rule, validate it, and print it -- never install
+    it.
+
+    This is the console's only interaction with /etc/sudoers.d, and it
+    stops short of touching /etc at all: the file is written under
+    packaging/, checked with whatever `visudo` is on PATH, and the exact
+    install command is printed for the operator to run themselves. There
+    is no flag here that writes to /etc, and there must never be one: an
+    install mode that exists but goes unused is still an install mode
+    someone will eventually use.
+    """
+    text = render_sudoers(getpass.getuser())
+    SUDOERS_DEST.parent.mkdir(parents=True, exist_ok=True)
+    SUDOERS_DEST.write_text(text, encoding="utf-8")
+
+    # Resolved at runtime, never hard-coded: this machine's visudo is
+    # sudo-rs's reimplementation, reached through /etc/alternatives, and a
+    # future one may differ again. Whichever `visudo` answers on PATH is
+    # the one whose opinion of this file matters.
+    visudo = shutil.which("visudo")
+    if visudo is None:
+        print(f"Wrote {SUDOERS_DEST}, but no 'visudo' is on PATH: cannot "
+              "validate it.", file=sys.stderr)
+        print("Install sudo (or sudo-rs) and rerun before trusting this "
+              "file.", file=sys.stderr)
+        return 1
+
+    result = subprocess.run([visudo, "-c", "-f", str(SUDOERS_DEST)],
+                             capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Wrote {SUDOERS_DEST}, but visudo -c rejected it:",
+              file=sys.stderr)
+        print((result.stdout + result.stderr).strip(), file=sys.stderr)
+        return 1
+
+    print(text)
+    print(f"Written to  : {SUDOERS_DEST}")
+    print(f"Validated by: {visudo}")
+    print()
+    print("Never installed automatically. To install it, run:")
+    print("  sudo install -m 0440 -o root -g root \\")
+    print(f"    {SUDOERS_DEST} /etc/sudoers.d/health-console")
+    return 0
+
+
 def _lan_address() -> str | None:
     """The machine's own first up, non-loopback IPv4 address, if any --
     "http://0.0.0.0:8787" is not a URL anyone's phone can open; this is."""
@@ -272,14 +329,15 @@ def cmd_run(cfg) -> int:
 
 
 COMMANDS = {"run": cmd_run, "config": cmd_config,
-            "status": cmd_status, "prune": cmd_prune, "token": cmd_token}
+            "status": cmd_status, "prune": cmd_prune, "token": cmd_token,
+            "sudoers": cmd_sudoers}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="health-console", description="System health console.")
     parser.add_argument("command", nargs="?", choices=sorted(COMMANDS),
-                        help="run, config, status, prune or token")
+                        help="config, prune, run, status, sudoers or token")
     parser.add_argument("--config", type=Path, default=None,
                         help="path to a configuration file")
     parser.add_argument("--rotate", action="store_true",
@@ -306,4 +364,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_config(cfg, config_path)
     if args.command == "token":
         return cmd_token(cfg, config_path, args.rotate)
+    if args.command == "sudoers":
+        return cmd_sudoers(cfg, config_path, args.rotate)
     return COMMANDS[args.command](cfg)

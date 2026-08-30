@@ -513,10 +513,21 @@ to enable it, never a reassuring zero.
 
 ### 10.5 Front-end technique
 
-No build step, no CDN — the console must work without Internet access, which is the
-least one can ask of a diagnostic tool. Native ES modules, modern CSS (grid,
-container queries, `oklch`), hand-drawn SVG charts. Budget: < 60 KiB of uncompressed
-JS, plus the message catalogues.
+No build step and **no CDN** — the console must work without Internet access,
+which is the least one can ask of a diagnostic tool. Native ES modules under
+`web/js/`, and two libraries vendored under `web/vendor/` and served from disk:
+Bootstrap 5.3 for the layout and Chart.js 4 for the charts.
+
+Vendoring rather than linking is not a preference: `default-src 'self'` means a
+CDN stylesheet would fail **silently** in the browser.
+
+Budget: < 60 KiB of uncompressed JS **for code we write**, enforced across
+`web/js/*.js`. The vendored libraries sit outside that budget and are recorded
+with their exact versions in `web/vendor/LICENSES.md`.
+
+Superseded: this section previously called for hand-drawn SVG charts and
+counted the vendored libraries against the 60 KiB budget. See
+`2026-08-30-health-console-ui-redesign.md` §2.2.
 
 ## 11. Internationalisation
 

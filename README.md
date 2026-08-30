@@ -56,10 +56,11 @@ Python standard library, `psutil` and SQLite. **No `pip` dependency, no virtuale
 build step, no CDN** — a diagnostic tool must work without Internet access, and
 survive distribution upgrades.
 
-The collector runs at two cadences: 2 seconds for what is cheap to read (`/proc`,
-`/sys`), 5 minutes for what is expensive (SMART, APT, systemd). The HTTP server
-streams state over SSE. The front end is HTML, CSS and native ES modules, with
-hand-drawn SVG charts.
+The collector runs at two cadences: 2 seconds for what is cheap to read
+(`/proc`, `/sys`), 5 minutes for what is expensive (SMART, APT, systemd). The
+HTTP server streams state over SSE. The front end is HTML, CSS and native ES
+modules, built on Bootstrap and Chart.js — both **vendored and served from
+disk**, never fetched from a CDN, so the console works with no network at all.
 
 Full design:
 [`docs/superpowers/specs/2026-08-29-health-console-design.md`](docs/superpowers/specs/2026-08-29-health-console-design.md)

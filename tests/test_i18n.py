@@ -3,6 +3,7 @@ import re
 import unittest
 from pathlib import Path
 
+from healthconsole.actions import ACTION_IDS
 from healthconsole.findings import FINDING_IDS, FINDING_PARAMS, Severity
 
 I18N = Path(__file__).resolve().parent.parent / "web" / "i18n"
@@ -21,9 +22,51 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.probe.unavailable",
     "ui.probe.unavailable.why",
     "ui.probe.unavailable.raw_prefix",
-    "ui.expert.placeholder",
     "ui.state.no_measurement",
     "ui.state.no_measurement.detail",
+    # Theme control
+    "ui.theme.label", "ui.theme.auto", "ui.theme.light", "ui.theme.dark",
+    # Range control
+    "ui.range.group", "ui.range.1h", "ui.range.24h", "ui.range.7d",
+    "ui.range.90d", "ui.refresh",
+    # Metric labels
+    "ui.metric.cpu.usage", "ui.metric.load.1", "ui.metric.cpu.temp.pkg",
+    "ui.metric.mem.available", "ui.metric.mem.available_pct",
+    "ui.metric.mem.swap.used", "ui.metric.battery.charge_pct",
+    "ui.metric.battery.wear_pct",
+    # Metric hints: a short, visible caption beside each Expert-mode tile
+    # (never a title="" tooltip -- see web/js/expert.js's renderTiles).
+    "ui.metric.cpu.usage.hint", "ui.metric.cpu.temp.pkg.hint",
+    "ui.metric.mem.available.hint", "ui.metric.mem.swap.used.hint",
+    "ui.metric.battery.charge_pct.hint", "ui.metric.load.1.hint",
+    # Chart card groups
+    "ui.chart.group.cpu", "ui.chart.group.thermal",
+    "ui.chart.group.memory", "ui.chart.group.battery",
+    # Chart states. Only the "short" wording exists: the depth line exists
+    # to explain a short chart, and on a full window it instead named the
+    # table's own depth_days -- contradicting itself across range buttons
+    # on any machine whose raw retention is shorter than its 90d history.
+    "ui.chart.empty", "ui.chart.depth_short", "ui.chart.depth_short_day",
+    "ui.chart.depth_short_hours", "ui.chart.depth_short_hour",
+    "ui.chart.summary", "ui.chart.unavailable",
+    # Expert sections
+    "ui.expert.overview", "ui.expert.probes", "ui.expert.raw",
+    "ui.expert.probe_table.name", "ui.expert.probe_table.status",
+    "ui.expert.probe_table.detail",
+    # Errors
+    "ui.error.history",
+    # Actions tab
+    "ui.mode.actions", "ui.actions.available", "ui.actions.audit",
+    "ui.actions.none", "ui.actions.run", "ui.actions.running",
+    "ui.actions.output", "ui.actions.confirm.title",
+    "ui.actions.confirm.cancel", "ui.actions.confirm.go",
+    "ui.actions.result.ok", "ui.actions.result.failed",
+    "ui.actions.result.killed",
+    "ui.actions.audit.when", "ui.actions.audit.what",
+    "ui.actions.audit.source", "ui.actions.audit.outcome",
+    "ui.actions.audit.empty",
+    "ui.error.action.busy", "ui.error.action.refused",
+    "ui.error.action.failed",
 })
 
 
@@ -154,6 +197,26 @@ class TestNoJargonLeaksToSimpleMode(unittest.TestCase):
                             term, prose,
                             f"{locale}:finding.{finding_id}.{suffix} leaks "
                             f"'{term}' into Simple mode")
+
+
+class TestActionCatalogueWording(unittest.TestCase):
+    def test_every_action_has_a_label_a_description_and_a_confirmation(self):
+        for locale in locales():
+            catalogue = load(locale)
+            for action_id in sorted(ACTION_IDS):
+                for suffix in ("label", "description", "confirm"):
+                    key = f"action.{action_id}.{suffix}"
+                    self.assertIn(key, catalogue, f"{locale} lacks {key}")
+
+    def test_every_risk_level_has_a_word_and_an_icon(self):
+        # Colour never carries the state alone.
+        from healthconsole.actions import Risk
+        for locale in locales():
+            catalogue = load(locale)
+            for risk in Risk:
+                for suffix in ("word", "icon"):
+                    key = f"risk.{risk.value}.{suffix}"
+                    self.assertIn(key, catalogue, f"{locale} lacks {key}")
 
 
 if __name__ == "__main__":

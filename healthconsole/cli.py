@@ -8,8 +8,13 @@ interface.
 from __future__ import annotations
 
 import argparse
+import os
+import pwd
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -20,14 +25,23 @@ from healthconsole.config import (
     DEFAULT_CONFIG_PATH, ConfigError, estimate_db_bytes, load_config,
 )
 from healthconsole.ring import Ring
+from healthconsole.runner import ActionRunner
 from healthconsole.scheduler import Scheduler
 from healthconsole.server import WEB_DIR, generate_token, is_loopback, make_server
 from healthconsole.store import Store
+from healthconsole.sudoers import render as render_sudoers
 
 DATA_DIR = Path.home() / ".local" / "share" / "health-console"
 WARN_DB_BYTES = 500 * 1024 ** 2
 ASSUMED_METRIC_COUNT = 25
 SECONDS_PER_DAY = 86_400
+
+# packaging/sudoers.d/health-console, relative to the repository root --
+# never /etc. See cmd_sudoers: there is no code path anywhere in this
+# module that writes outside this directory.
+SUDOERS_DEST = (
+    Path(__file__).resolve().parent.parent / "packaging" / "sudoers.d"
+    / "health-console")
 
 
 def default_db_path() -> Path:
@@ -166,6 +180,117 @@ def cmd_token(cfg, config_path: Path, rotate: bool) -> int:
     return 0
 
 
+def cmd_sudoers(cfg, config_path, rotate) -> int:
+    """Render the sudoers rule, validate it, and print it -- never install
+    it.
+
+    This is the console's only interaction with /etc/sudoers.d, and it
+    stops short of touching /etc at all: the file is validated under a
+    temporary name, only ever copied into packaging/ once `visudo` has
+    accepted it, and the exact install command is printed for the operator
+    to run themselves. There is no flag here that writes to /etc, and
+    there must never be one: an install mode that exists but goes unused
+    is still an install mode someone will eventually use.
+
+    The account name comes from `pwd.getpwuid(os.getuid())`, never from
+    `getpass.getuser()` (which reads $LOGNAME / $USER verbatim, before it
+    ever consults the password database) or from any other environment
+    variable -- the whole point of this command is to defend the machine
+    against exactly the kind of environment-controlled string that would
+    otherwise flow straight into a sudoers rule. That is also why a uid of
+    0 is refused outright rather than resolved via `$SUDO_UID`: reading it
+    would put the environment straight back in the loop this command
+    exists to close, and a rule naming "root" would be a silently useless
+    NOPASSWD grant to an account that never needs one.
+
+    `--rotate` means nothing here (there is no token to rotate) and is
+    refused rather than silently ignored.
+    """
+    if rotate:
+        print("'sudoers' has no '--rotate': there is no token to rotate "
+              "here.", file=sys.stderr)
+        return 2
+
+    uid = os.getuid()
+    if uid == 0:
+        print("Refusing to render a sudoers rule while running as root.",
+              file=sys.stderr)
+        print("Run 'health-console sudoers' as the account that will hold "
+              "the rule (without sudo); the command it prints at the end "
+              "is the one to run with sudo.", file=sys.stderr)
+        return 1
+    try:
+        user = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        print(f"Refusing to render a sudoers rule: uid {uid} has no entry "
+              "in the password database.", file=sys.stderr)
+        return 1
+
+    try:
+        text = render_sudoers(user)
+    except ValueError as exc:
+        print(f"Refusing to render a sudoers rule: {exc}", file=sys.stderr)
+        return 1
+
+    # Resolved at runtime, never hard-coded: this machine's visudo is
+    # sudo-rs's reimplementation, reached through /etc/alternatives, and a
+    # future one may differ again. Whichever `visudo` answers on PATH is
+    # the one whose opinion of this file matters.
+    visudo = shutil.which("visudo")
+    if visudo is None:
+        print("No 'visudo' is on PATH: cannot validate the rendered rule.",
+              file=sys.stderr)
+        print("Install sudo (or sudo-rs) and rerun before trusting this "
+              "file.", file=sys.stderr)
+        return 1
+
+    # Validate a throwaway copy before SUDOERS_DEST is touched at all. A
+    # previous successful run may have left a *valid* file there, already
+    # copied into an operator's runbook as the install source; a rejected
+    # render must never overwrite it with text `visudo -c` refused.
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".sudoers", delete=False)
+    try:
+        handle.write(text)
+        handle.close()
+        result = subprocess.run([visudo, "-c", "-f", handle.name],
+                                 capture_output=True, text=True)
+        if result.returncode != 0:
+            print("visudo -c rejected the rendered rule:", file=sys.stderr)
+            print((result.stdout + result.stderr).strip(), file=sys.stderr)
+            return 1
+        SUDOERS_DEST.parent.mkdir(parents=True, exist_ok=True)
+        # mkdir(mode=...) is masked by umask and is a no-op when the
+        # directory already exists either way, so the directory's mode
+        # has to be set with an explicit chmod: replacing a file only
+        # needs write permission on its *parent directory*, not the file
+        # itself, so an 0775/0777 packaging/sudoers.d/ would still let
+        # another local user unlink-and-replace this file between
+        # "rendered" and "operator runs the printed sudo install line",
+        # even with the file itself locked down below.
+        SUDOERS_DEST.parent.chmod(0o700)
+        # shutil.copyfile() copies only the bytes, not the mode: the
+        # NamedTemporaryFile above is created 0600, but without this the
+        # destination would land however the process umask says (0664
+        # under a common 002), group-writable, sitting between "rendered"
+        # and "operator runs the printed sudo install line" with nothing
+        # stopping another local user in that group from swapping its
+        # content first.
+        shutil.copyfile(handle.name, SUDOERS_DEST)
+        SUDOERS_DEST.chmod(0o600)
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
+
+    print(text)
+    print(f"Written to  : {SUDOERS_DEST}")
+    print(f"Validated by: {visudo}")
+    print()
+    print("Never installed automatically. To install it, run:")
+    print("  sudo install -m 0440 -o root -g root \\")
+    print(f"    {SUDOERS_DEST} /etc/sudoers.d/health-console")
+    return 0
+
+
 def _lan_address() -> str | None:
     """The machine's own first up, non-loopback IPv4 address, if any --
     "http://0.0.0.0:8787" is not a URL anyone's phone can open; this is."""
@@ -217,7 +342,8 @@ def _tick_once(scheduler, cfg, last_flush, last_maintain, now=None):
 
 def cmd_run(cfg) -> int:
     store, scheduler = _open(cfg)
-    server = make_server(cfg, scheduler, WEB_DIR)
+    runner = ActionRunner(store)
+    server = make_server(cfg, scheduler, WEB_DIR, runner=runner)
     stop = threading.Event()
 
     def loop():
@@ -258,20 +384,48 @@ def cmd_run(cfg) -> int:
     finally:
         stop.set()
         server.server_close()
+        # Told before the store is: server_close() only stops the listening
+        # socket, it does not wait for request threads already in flight,
+        # and daemon_threads=True means nothing below joins them either (the
+        # /api/stream handler loops forever by design). Setting this first
+        # closes the window for any *new* request on a still-open keep-alive
+        # connection; a request already inside the store when it closes is
+        # covered separately, by the try/except in server.py's _history.
+        server.shutdown_event.set()
         thread.join(timeout=5)
-        store.close()
+        # Must run, and be given time to finish, before store.close()
+        # below: a run still in flight would otherwise write its audit
+        # row into a closed database (sqlite3.ProgrammingError), and a
+        # privileged child process would be left running past the
+        # console's own exit. cancel() inside this can block for a few
+        # seconds (SIGTERM, a confirmation wait, SIGKILL, another wait)
+        # if a run is actually in flight -- see ActionRunner.shutdown's
+        # docstring -- which is why this happens after the listening
+        # socket and the collection thread are already stopped, not
+        # concurrently with them.
+        try:
+            runner.shutdown()
+        finally:
+            # In a finally of its own: shutdown() cancels a run in flight
+            # and can raise (a child that will not die, an OS error on
+            # signalling it). If it did, the store would never be closed
+            # -- leaking the handle and leaving the database's WAL
+            # unfinalised -- over a failure in the step whose whole job
+            # was to make closing safe.
+            store.close()
     return 0
 
 
 COMMANDS = {"run": cmd_run, "config": cmd_config,
-            "status": cmd_status, "prune": cmd_prune, "token": cmd_token}
+            "status": cmd_status, "prune": cmd_prune, "token": cmd_token,
+            "sudoers": cmd_sudoers}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="health-console", description="System health console.")
     parser.add_argument("command", nargs="?", choices=sorted(COMMANDS),
-                        help="run, config, status, prune or token")
+                        help="config, prune, run, status, sudoers or token")
     parser.add_argument("--config", type=Path, default=None,
                         help="path to a configuration file")
     parser.add_argument("--rotate", action="store_true",
@@ -298,4 +452,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_config(cfg, config_path)
     if args.command == "token":
         return cmd_token(cfg, config_path, args.rotate)
+    if args.command == "sudoers":
+        return cmd_sudoers(cfg, config_path, args.rotate)
     return COMMANDS[args.command](cfg)

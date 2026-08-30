@@ -372,6 +372,12 @@ noise patterns, and reports only a pattern that is **new** or whose frequency is
 
 ## 8. Action catalogue
 
+**Note on current implementation:** This section describes the complete destination.
+B1 implements the execution machinery and one action, `apt.refresh`. The remaining
+twelve actions in §8.2 await probes for updates, services, storage, SMART and
+journal that were designed but not written. See `2026-08-30-action-catalogue-b1-design.md`
+for what exists and what remains.
+
 ### 8.1 Principle
 
 There is **no "run this command" route**. Every action is declared in code:
@@ -513,10 +519,28 @@ to enable it, never a reassuring zero.
 
 ### 10.5 Front-end technique
 
-No build step, no CDN — the console must work without Internet access, which is the
-least one can ask of a diagnostic tool. Native ES modules, modern CSS (grid,
-container queries, `oklch`), hand-drawn SVG charts. Budget: < 60 KiB of uncompressed
-JS, plus the message catalogues.
+No build step and **no CDN** — the console must work without Internet access,
+which is the least one can ask of a diagnostic tool. Native ES modules under
+`web/js/`, and two libraries vendored under `web/vendor/` and served from disk:
+Bootstrap 5.3 for the layout and Chart.js 4 for the charts.
+
+Vendoring rather than linking is not a preference: `default-src 'self'` means a
+CDN stylesheet would fail **silently** in the browser.
+
+Budget: < 80 KiB of uncompressed JS **for code we write**, enforced across
+`web/js/*.js`. The vendored libraries sit outside that budget and are recorded
+with their exact versions in `web/vendor/LICENSES.md`.
+
+Superseded (first revision): this section previously called for hand-drawn SVG
+charts and counted the vendored libraries against the 60 KiB budget. See
+`2026-08-30-health-console-ui-redesign.md` §2.2.
+
+Superseded (second revision): the 60 KiB budget itself was raised to 80 KiB when
+the UI scope expanded from three static pages to eight ES modules implementing an
+interactive dashboard with gauges, sparklines, chart grids, probes, and
+accessible descriptions. See `2026-08-30-health-console-ui-redesign.md` §2.2
+supplement. The vendored and own-code budgets remain separate; only the latter
+increased.
 
 ## 11. Internationalisation
 
@@ -591,6 +615,11 @@ data, and translating them would make problem reports harder to compare.
 - `sudoers.d` limited to the named binaries with their arguments.
 - Headers: `Content-Security-Policy: default-src 'self'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  Amended 2026-08-30 (post-implementation): the CSP's `img-src` clause was
+  widened to `'self' data:` so that Bootstrap's vendored icons (embedded as
+  `data:image/svg+xml` URIs) render — see
+  `2026-08-30-health-console-ui-redesign.md` §4.2 correction. `script-src` and
+  `style-src` remain governed by `default-src 'self'`, unrelaxed.
 - systemd hardening: `NoNewPrivileges=no` (mandatory, `sudo` depends on it),
   `ProtectSystem=strict` with `ReadWritePaths=` limited to
   `~/.local/share/health-console` and `~/.config/health-console`, plus `PrivateTmp`
@@ -668,7 +697,10 @@ health-console/
 │   ├── plausibility.py ring.py       cli.py
 │   └── probes/  cpu memory thermal network battery storage smart
 │                updates services journal processes osinfo
-├── web/  index.html  style.css  app.js  i18n/en.json  i18n/fr.json
+├── web/  index.html  style.css  i18n/en.json  i18n/fr.json
+│        js/  app.js  charts.js  dom.js  expert.js  history.js
+│             i18n.js  simple.js  stream.js  theme-boot.js
+│        vendor/  bootstrap.min.css  bootstrap.bundle.min.js  chart.umd.min.js
 ├── systemd/health-console.service
 ├── packaging/sudoers.d/health-console
 ├── tests/  fixtures/  test_verdict.py  test_store.py  test_server.py

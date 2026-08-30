@@ -4,9 +4,9 @@ A local web console that reports the health of an Ubuntu machine through two
 deliberate readings: a **Simple mode** in plain language, understandable without a
 technical background, and an **Expert mode** that exposes everything.
 
-> **Project status: working console.** All 15 tasks of the implementation plan
-> are complete and reviewed. It runs today from a checkout — see
-> [Running it](#running-it) below.
+> **Project status: working console.** Simple and Expert modes, a redesigned
+> front end and a hardened collector and store all run today from a checkout
+> — see [Running it](#running-it) below.
 
 ## The idea
 
@@ -56,10 +56,11 @@ Python standard library, `psutil` and SQLite. **No `pip` dependency, no virtuale
 build step, no CDN** — a diagnostic tool must work without Internet access, and
 survive distribution upgrades.
 
-The collector runs at two cadences: 2 seconds for what is cheap to read (`/proc`,
-`/sys`), 5 minutes for what is expensive (SMART, APT, systemd). The HTTP server
-streams state over SSE. The front end is HTML, CSS and native ES modules, with
-hand-drawn SVG charts.
+The collector runs at two cadences: 2 seconds for what is cheap to read
+(`/proc`, `/sys`), 5 minutes for what is expensive (SMART, APT, systemd). The
+HTTP server streams state over SSE. The front end is HTML, CSS and native ES
+modules, built on Bootstrap and Chart.js — both **vendored and served from
+disk**, never fetched from a CDN, so the console works with no network at all.
 
 Full design:
 [`docs/superpowers/specs/2026-08-29-health-console-design.md`](docs/superpowers/specs/2026-08-29-health-console-design.md)
@@ -74,8 +75,13 @@ release).
 ./bin/health-console run
 ```
 
-Then open `http://127.0.0.1:8787/` (or the LAN address it prints, if `bind`
-is not loopback). `Ctrl+C` stops it.
+Then open `http://127.0.0.1:8787/`. `Ctrl+C` stops it.
+
+**By default it listens on every interface**, not only on loopback, and prints
+the LAN address alongside the local one when it can determine one. Nothing is
+exposed by that on its own: without a token in the configuration, every
+non-loopback request is refused with a `401`. Set `bind = "127.0.0.1"` if you
+want it not to listen beyond this machine at all.
 
 Other commands:
 
@@ -85,6 +91,7 @@ Other commands:
 ./bin/health-console prune           # apply the configured retention immediately
 ./bin/health-console token           # show the configured token, if any
 ./bin/health-console token --rotate  # generate one and store it in config.toml
+./bin/health-console sudoers         # render the sudoers rule and print it; does not install
 ```
 
 Configuration lives at `~/.config/health-console/config.toml` (created on
@@ -93,7 +100,7 @@ setting below takes its default). Example:
 
 ```toml
 [server]
-bind  = "127.0.0.1"   # "0.0.0.0" or "::" to also listen on the LAN
+bind  = "0.0.0.0"     # the default — every interface. "127.0.0.1" for loopback only
 port  = 8787
 token = ""            # required for any non-loopback request; see Security notes
 
@@ -116,12 +123,22 @@ deploying it anywhere else.
 - **It runs privileged commands.** APT upgrades, service restarts, machine shutdown.
   Installation writes a `sudoers.d` rule restricted to a named list of binaries with
   fixed arguments — never `ALL`, never a wildcard.
+- **The sudoers `NOPASSWD` rule is granted to a user account, not to this program.**
+  Once installed, any process running as that user can run those exact commands
+  without a password — a script, a browser extension, a compromised dependency.
 - **There is no "run this command" route.** The action catalogue is declared in code;
   the browser sends an identifier, never a command fragment. `shell=False`, and no
   text from the network is interpolated into an argument list.
-- **It listens on the local network**, protected by a token. Actions are **refused
-  outside `127.0.0.1`** unless explicitly enabled in configuration: reading and acting
-  do not carry the same cost when you get it wrong.
+- **It listens on the local network by default** (`bind = "0.0.0.0"`), protected by
+  a token. With no token configured the socket is open but every non-loopback
+  request is refused, so an unconfigured console is not readable from the LAN —
+  it is listening, not answering. Actions will be **refused outside `127.0.0.1`**
+  unless explicitly enabled in configuration: reading and acting do not carry the
+  same cost when you get it wrong.
+- **The token crosses the network in clear text.** This is plain HTTP with no TLS,
+  so anyone able to observe traffic on the same network can read it, and it grants
+  access to detailed telemetry about the machine. `token --rotate` invalidates a
+  token you believe was seen.
 - **The token can also be passed as `?k=` in the URL**, so a phone can open a
   bookmarked or shared link. That is a deliberate trade-off: unlike the header path,
   it persists in browser history and in any intermediary's logs (LAN router, proxy,

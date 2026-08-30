@@ -194,10 +194,14 @@ def cmd_sudoers(cfg, config_path, rotate) -> int:
 
     The account name comes from `pwd.getpwuid(os.getuid())`, never from
     `getpass.getuser()` (which reads $LOGNAME / $USER verbatim, before it
-    ever consults the password database) -- the whole point of this
-    command is to defend the machine against exactly the kind of
-    environment-controlled string that would otherwise flow straight into
-    a sudoers rule.
+    ever consults the password database) or from any other environment
+    variable -- the whole point of this command is to defend the machine
+    against exactly the kind of environment-controlled string that would
+    otherwise flow straight into a sudoers rule. That is also why a uid of
+    0 is refused outright rather than resolved via `$SUDO_UID`: reading it
+    would put the environment straight back in the loop this command
+    exists to close, and a rule naming "root" would be a silently useless
+    NOPASSWD grant to an account that never needs one.
 
     `--rotate` means nothing here (there is no token to rotate) and is
     refused rather than silently ignored.
@@ -207,7 +211,21 @@ def cmd_sudoers(cfg, config_path, rotate) -> int:
               "here.", file=sys.stderr)
         return 2
 
-    user = pwd.getpwuid(os.getuid()).pw_name
+    uid = os.getuid()
+    if uid == 0:
+        print("Refusing to render a sudoers rule while running as root.",
+              file=sys.stderr)
+        print("Run 'health-console sudoers' as the account that will hold "
+              "the rule (without sudo); the command it prints at the end "
+              "is the one to run with sudo.", file=sys.stderr)
+        return 1
+    try:
+        user = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        print(f"Refusing to render a sudoers rule: uid {uid} has no entry "
+              "in the password database.", file=sys.stderr)
+        return 1
+
     try:
         text = render_sudoers(user)
     except ValueError as exc:
@@ -242,7 +260,15 @@ def cmd_sudoers(cfg, config_path, rotate) -> int:
             print((result.stdout + result.stderr).strip(), file=sys.stderr)
             return 1
         SUDOERS_DEST.parent.mkdir(parents=True, exist_ok=True)
+        # shutil.copyfile() copies only the bytes, not the mode: the
+        # NamedTemporaryFile above is created 0600, but without this the
+        # destination would land however the process umask says (0664
+        # under a common 002), group-writable, sitting between "rendered"
+        # and "operator runs the printed sudo install line" with nothing
+        # stopping another local user in that group from swapping its
+        # content first.
         shutil.copyfile(handle.name, SUDOERS_DEST)
+        SUDOERS_DEST.chmod(0o600)
     finally:
         Path(handle.name).unlink(missing_ok=True)
 

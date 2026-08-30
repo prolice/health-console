@@ -25,20 +25,27 @@ Both interpolated values are validated before a single line is built, and
 
 - `user` must be a plain POSIX login name, and never the literal `ALL`.
   A username is not safe input just because it usually looks like one --
-  `getpass.getuser()` (not called here; see cli.py) returns `$LOGNAME` /
-  `$USER` verbatim, and a value such as
-  ``prolice ALL=(ALL) NOPASSWD: ALL #`` parses cleanly under sudo-rs and
-  replaces the intended rule with unrestricted root. The comment character
-  swallows the rest of the line; without it, a bare ``ALL`` still grants
-  every account on the machine while looking, at a glance, like a normal
-  username.
-- Every element of every root action's `argv` is validated the same way.
-  `CATALOGUE` is trusted data today, but this module renders whatever it
-  is given, and the sudoers grammar treats whitespace, `,`, `*`, `?`, `!`,
-  `=` and `\\` as syntax, not text: a comma silently grants a second
-  command, a space silently produces a rule that no longer matches what
-  the runner actually runs, and a newline can smuggle in a second,
-  complete rule of its own.
+  `getpass.getuser()` (not called here; see cli.py, which resolves it from
+  the password database instead) returns `$LOGNAME` / `$USER` verbatim,
+  and a value such as ``prolice ALL=(ALL) NOPASSWD: ALL #`` parses
+  cleanly under sudo-rs and replaces the intended rule with unrestricted
+  root. The comment character swallows the rest of the line; without it,
+  a bare ``ALL`` still grants every account on the machine while looking,
+  at a glance, like a normal username.
+- Every element of every root action's `argv` is validated against an
+  **allowlist**, not a denylist. `CATALOGUE` is trusted data today, but
+  this module renders whatever it is given, and a denylist of "characters
+  sudoers treats specially" is a losing game: `#` opens a comment in
+  sudo-rs 0.2.13 (proved against this machine's real `visudo` -- garbage
+  after a bare command parses `rc=1`, the same garbage after `#` parses
+  `rc=0 parsed OK`), an empty argument or a trailing `#` both degenerate
+  the rule to a bare command name, which sudoers(5) documents as running
+  "with any arguments they wish" -- root code execution through
+  `apt-get`'s own option parsing -- and a Unicode zero-width space
+  (U+200B) is invisible but is not matched by `\\s`. Only the characters
+  the real catalogue's commands and arguments actually need are let
+  through, `argv[0]` must be an absolute path with no `..` segment, and
+  no element may be empty.
 """
 
 from __future__ import annotations
@@ -62,17 +69,23 @@ HEADER = """\
 # wildcard, never ALL as a command.
 """
 
-# A plain POSIX login name: lower-case letters, digits, underscore and
+# A plain POSIX login name: letters (either case -- POSIX allows both;
+# case alone carries no meaning to sudoers), digits, underscore and
 # hyphen, not starting with a digit or hyphen, at most 32 characters (the
-# usual system limit). Nothing sudoers would ever read specially.
-_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+# usual system limit). `ALL` would match this pattern -- it looks like an
+# ordinary name -- which is exactly why it is rejected separately below
+# rather than trusted to fall out of the character class.
+_USER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,31}")
 
-# Characters the sudoers grammar treats specially wherever they appear in
-# a command or its arguments: whitespace (including newline) separates
-# tokens and can smuggle in a second rule; `,` separates list entries;
-# `*` and `?` are wildcards; `!` negates; `=` introduces a `Runas` or
-# `Defaults` binding; `\` escapes the character after it.
-_ARGV_UNSAFE_RE = re.compile(r"[\s,*?!=\\]")
+# What an argv element is allowed to contain -- an allowlist, not a
+# denylist. sudo-rs's sudoers grammar reads far more as syntax than any
+# enumerated denylist catches: `#` opens a comment (mid-token, not just at
+# start of line), `:` separates fields, a bare or empty trailing element
+# degenerates the whole rule to just the command name -- which sudoers(5)
+# documents as letting the user run it "with any arguments they wish" --
+# and a Unicode zero-width space is invisible to `\s`. Only what the real
+# catalogue's commands and arguments need is let through.
+_ARGV_SAFE_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def _validate_user(user: str) -> None:
@@ -83,12 +96,18 @@ def _validate_user(user: str) -> None:
 
 
 def _validate_argv(argv: tuple[str, ...]) -> None:
-    if not argv or not argv[0].startswith("/"):
+    if not argv:
+        raise ValueError("refusing to render a sudoers rule: empty argv")
+    if not argv[0].startswith("/"):
         raise ValueError(
             f"refusing to render a sudoers rule: argv[0] must be an "
             f"absolute path, got {argv!r}")
+    if ".." in argv[0].split("/"):
+        raise ValueError(
+            f"refusing to render a sudoers rule: argv[0] must not contain "
+            f"a '..' path segment, got {argv!r}")
     for part in argv:
-        if _ARGV_UNSAFE_RE.search(part):
+        if part == "" or not _ARGV_SAFE_RE.fullmatch(part):
             raise ValueError(
                 f"refusing to render a sudoers rule: unsafe argument "
                 f"{part!r} in {argv!r}")

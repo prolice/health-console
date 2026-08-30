@@ -113,8 +113,26 @@ class Store:
             self.conn.commit()
 
     def close(self) -> None:
-        with self._lock:
+        # An unbounded acquire here can hang forever: cli.py's cmd_run gives
+        # a wedged scheduler thread (e.g. stuck inside a probe's sysfs read)
+        # only thread.join(timeout=5) before calling close(), so the thread
+        # -- and the lock -- may still be alive when this runs. That is
+        # exactly the terminal noise the shutdown fix exists to remove, so
+        # this must give up on the lock rather than wait on it forever.
+        # 2 seconds is comfortably above the longest locked section measured
+        # anywhere in this class (0.33s for aggregate_5m's largest batch),
+        # so an ordinarily busy Store is never the reason this gives up --
+        # only a genuinely wedged one is. The connection is closed either
+        # way: sqlite3 allows close() from a thread other than the one
+        # using the connection (check_same_thread=False), and a process
+        # that is exiting has no further use for a lock a wedged thread
+        # will never release.
+        acquired = self._lock.acquire(timeout=2)
+        try:
             self.conn.close()
+        finally:
+            if acquired:
+                self._lock.release()
 
     def key_id(self, key: str) -> int:
         cached = self._key_cache.get(key)

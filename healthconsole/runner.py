@@ -16,19 +16,22 @@ is to get them wrong:
    the whole process group, so a descendant that inherited stdout (an
    apt-get helper, a backgrounded shell job) cannot keep a privileged
    process running unbounded after the console has told itself it
-   stopped. When that cannot be confirmed -- permission denied, or a
-   descendant that escaped the group entirely -- the row says so rather
-   than claiming a clean kill it never verified.
+   stopped. Whether that is confirmed is decided fresh, at the moment
+   the row is written, by actually probing the process group -- never
+   from a flag frozen a few seconds earlier, which can already be wrong
+   by the time anyone reads it.
 3. The worker thread that owns (1) can never be blocked by drainage of
-   the child's output: not the reading itself (a separate thread), and
-   not closing the pipe afterwards (skipped while that thread is still
-   using it). A property this module claimed once and had to re-learn:
-   closing a text stream while another thread is blocked reading it
-   blocks the closer too.
+   the child's output: not the reading itself (a separate thread), not
+   closing the pipe afterwards (skipped while that thread is still using
+   it), and not by how long some *unrelated* descendant takes to let go
+   of the pipe once the actual child is already gone -- the read bound
+   restarts from the moment the child is reaped, not from the run's own
+   (possibly 30-minute) timeout.
 4. `is_busy()` can say "free" only once (1) is already true for the
    previous run -- otherwise a second run's row could land before the
    first's, and the log would no longer describe the order things
-   actually happened in.
+   actually happened in. The same ordering applies to events: an
+   "output" event can never reach a caller after "finished" has.
 """
 
 from __future__ import annotations
@@ -55,14 +58,19 @@ from healthconsole.store import Store
 # not left running, or left unconfirmed, for long.
 KILL_GRACE_SECONDS = 2.0
 
-# Extra headroom, beyond timeout_seconds + KILL_GRACE_SECONDS, that the
-# worker thread waits for the child itself to be confirmed dead before
-# giving up on it. Killing the whole process group (see _kill_group)
-# should make every descendant that inherited the pipe exit well within
-# this window; it exists only so a pathological escapee -- a
-# grandchild that double-forked out of the group, or one this process
-# lacks permission to signal at all -- cannot keep the worker thread,
-# and therefore the lock and the audit write, alive indefinitely.
+# How long the worker thread waits for the reader thread to see EOF
+# after the child itself has been reaped (the ordinary case), or after
+# giving up on waiting for the child at all (see hard_deadline in
+# _run()). Killing the whole process group (see _kill_group) should make
+# every descendant that inherited the pipe exit well within this window;
+# it exists only so a pathological escapee -- a grandchild that
+# double-forked out of the group, or one this process lacks permission
+# to signal at all -- cannot keep the worker thread, and therefore the
+# lock and the audit write, alive indefinitely. Measured from the moment
+# the child is reaped, not from the run's start: a run whose direct
+# child exits in milliseconds must not hold the lock for the rest of a
+# 30-minute timeout merely because some unrelated descendant is still
+# holding the pipe open.
 READ_BOUND_SECONDS = 5.0
 
 # How many lines of captured output to keep at the start and the end of
@@ -85,7 +93,7 @@ def _log_error(message: str) -> None:
     traceback.print_exc(file=sys.stderr)
 
 
-def _kill_group(process: subprocess.Popen, grace: float) -> bool:
+def _kill_group(process: subprocess.Popen, grace: float) -> bool | None:
     """Terminate a process and everything in its process group.
 
     `start_new_session=True` at Popen time makes `process.pid` the
@@ -95,26 +103,32 @@ def _kill_group(process: subprocess.Popen, grace: float) -> bool:
     can leave those descendants holding the pipe open forever: the
     direct child exits, but a read loop waiting for EOF never sees it.
 
-    Returns True only once the target is actually confirmed dead (or
-    was already gone) -- never merely because a signal "was not
-    refused". Two situations must not be reported as an ordinary,
-    successful kill: `os.killpg` can fail outright with `PermissionError`
-    (the expected case for `apt-get` running under `sudo -n` at uid 0,
-    since this process does not), and a target can survive even SIGKILL
-    within the confirmation window (a process wedged in an
-    uninterruptible kernel wait). The caller decides how to record
-    either -- this function's only job is to not paper over them.
+    Returns `None` if there was nothing to do -- the process was already
+    dead when checked, so no signal was ever dispatched, and neither a
+    cancel nor a timeout can claim credit for anything that happened to
+    it. Otherwise returns whether the target could be confirmed dead
+    within this call's own short, bounded wait. That result is a
+    preliminary signal only, useful for logging -- the row this
+    function's callers eventually write is decided from a *fresh* check
+    at audit-write time (see `_group_is_dead`), not from a bool frozen
+    here: `process.wait()` only ever confirms the direct child, and an
+    in-group sibling that ignored the signal (or one that dies a moment
+    after this function gives up) would make a value cached here already
+    wrong by the time anyone reads it.
     """
     if process.poll() is not None:
-        return True
+        return None
     try:
         pgid = os.getpgid(process.pid)
     except ProcessLookupError:
-        return True  # already gone
+        return None
+    except OSError as exc:
+        _log_error(f"could not resolve the process group id: {exc}")
+        return False
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
-        return True
+        return None
     except OSError as exc:
         # PermissionError (a subclass of OSError) is EPERM: no member of
         # the group is signalable by this uid. This is the expected
@@ -138,6 +152,41 @@ def _kill_group(process: subprocess.Popen, grace: float) -> bool:
         process.wait(grace)
         return True
     except subprocess.TimeoutExpired:
+        return False
+
+
+def _group_is_dead(process: subprocess.Popen) -> bool:
+    """A fresh, at-write-time check of whether the whole process group
+    is gone -- not a flag frozen inside `_kill_group`'s own confirmation
+    wait, which can already be stale by the time a row is written.
+
+    `process.poll()` alone only confirms the direct child: a sibling in
+    the same group that ignored the group's SIGTERM (`trap "" TERM`, or
+    one simply not yet reaped) can still be alive after the direct
+    child's own exit is observed. `os.killpg(pid, 0)` -- signal 0
+    delivers nothing, it only checks whether the target exists and is
+    signalable -- catches that: `ProcessLookupError` (ESRCH) means the
+    group is entirely gone; success, or `PermissionError` (EPERM,
+    meaning it exists but this process cannot touch it -- the expected
+    case for `apt-get` still running under `sudo -n` at uid 0), both
+    mean there is no evidence of death and this must not report one.
+    """
+    if process.poll() is None:
+        return False
+    try:
+        # start_new_session=True at Popen time made this process's own
+        # pid double as its process group id; no separate os.getpgid()
+        # lookup is needed here, and after reaping one would risk
+        # querying a pid the OS has since reused for something
+        # unrelated.
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        # PermissionError (still exists, not ours to touch) or any
+        # other unexpected error: neither is evidence of death.
+        return False
+    else:
         return False
 
 
@@ -194,14 +243,19 @@ class _Run:
     process: subprocess.Popen | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     timed_out: bool = False
-    # Set when a kill was attempted (by cancel() or the timeout
-    # watchdog) but _kill_group could not confirm the target actually
-    # died -- see the module docstring's guarantee (2).
-    kill_unconfirmed: bool = False
+    # True only once a signal was actually dispatched to a process that
+    # was still alive at the time -- as opposed to `cancel_requested` or
+    # `timed_out`, which record intent (the operator clicked cancel; the
+    # watchdog fired) regardless of whether there was anything left to
+    # kill. A cancel or a timeout that finds the process already exited
+    # must not claim credit for ending it; this flag is what tells the
+    # note-computation logic the difference.
+    kill_attempted: bool = False
 
 
 def _drain(stream, buffer: _OutputBuffer, on_event: Callable[[dict], None],
-          run_id: str, stop_forwarding: threading.Event) -> None:
+          run_id: str, stop_forwarding: threading.Event,
+          event_order_lock: threading.Lock) -> None:
     """Read a process's combined stdout/stderr, line by line.
 
     Runs in its own thread for two reasons: a caller callback that
@@ -218,24 +272,33 @@ def _drain(stream, buffer: _OutputBuffer, on_event: Callable[[dict], None],
     after which no further "output" event may reach `on_event`, or a
     line delivered by a lingering read (one this thread was still
     blocked in when the worker gave up waiting for it) could arrive
-    after the "finished" event already has, breaking the ordering every
-    caller of this module is entitled to rely on.
+    after the "finished" event already has. Checking it and calling
+    `on_event` is not enough on its own to guarantee that ordering,
+    though: "check, then act" has a window between the two in which the
+    finalising thread can run entirely (set the flag, emit "finished")
+    before this thread's already-in-flight decision to call `on_event`
+    executes. `event_order_lock`, held by both this check-then-call and
+    the finalising thread's set-then-emit (see _run), closes that
+    window: whichever side gets the lock first completes its whole
+    step before the other can start.
     """
     event_failed = False
     try:
         for line in stream:
             line = line.rstrip("\n")
             buffer.append(line)
-            if not event_failed and not stop_forwarding.is_set():
-                try:
-                    on_event({"run_id": run_id, "phase": "output",
-                              "line": line})
-                except Exception:  # noqa: BLE001 -- caller's code, not ours
-                    event_failed = True
-                    _log_error(
-                        f"on_event raised while streaming output for "
-                        f"run {run_id}; no longer forwarding its output "
-                        "events (still recording them for the audit row)")
+            with event_order_lock:
+                if not event_failed and not stop_forwarding.is_set():
+                    try:
+                        on_event({"run_id": run_id, "phase": "output",
+                                  "line": line})
+                    except Exception:  # noqa: BLE001 -- caller's code
+                        event_failed = True
+                        _log_error(
+                            f"on_event raised while streaming output "
+                            f"for run {run_id}; no longer forwarding "
+                            "its output events (still recording them "
+                            "for the audit row)")
     except Exception:  # noqa: BLE001
         # Reading itself should not raise -- errors="replace" at Popen
         # time rules out UnicodeDecodeError -- but this loop must not be
@@ -336,6 +399,12 @@ class ActionRunner:
         return value rather than an exception, so a caller wiring this
         into an HTTP handler cannot turn "the operator clicked cancel"
         into a 500, and shutdown() can always reach its own wait().
+
+        Blocks its caller for up to roughly 2 * KILL_GRACE_SECONDS (SIGTERM,
+        wait, SIGKILL, wait again) when there is a live process to act
+        on -- a few seconds, not instant. Whoever wires this into an
+        HTTP handler (Task 6) should account for that latency rather
+        than assume cancel() returns immediately.
         """
         run = self._current
         if run is None:
@@ -344,9 +413,10 @@ class ActionRunner:
             return
         run.cancel_requested.set()
         process = run.process
-        if process is not None and not _kill_group(process,
-                                                    KILL_GRACE_SECONDS):
-            run.kill_unconfirmed = True
+        if process is not None:
+            result = _kill_group(process, KILL_GRACE_SECONDS)
+            if result is not None:
+                run.kill_attempted = True
         # If process is still None, Popen() has not returned yet (or is
         # about to raise). The worker checks cancel_requested itself,
         # immediately after assigning run.process, so this is not a
@@ -390,6 +460,7 @@ class ActionRunner:
         process: subprocess.Popen | None = None
         reader_thread: threading.Thread | None = None
         stop_forwarding = threading.Event()
+        event_order_lock = threading.Lock()
         try:
             self._emit(on_event, run.run_id, "started",
                       action_id=action.id)
@@ -421,8 +492,8 @@ class ActionRunner:
                 # cancel() ran before Popen() returned. Honour it the
                 # instant the process exists, rather than leaving it to
                 # run to its full timeout unrescued.
-                if not _kill_group(process, KILL_GRACE_SECONDS):
-                    run.kill_unconfirmed = True
+                if _kill_group(process, KILL_GRACE_SECONDS) is not None:
+                    run.kill_attempted = True
 
             watchdog = threading.Timer(
                 self._timeout_seconds, self._on_timeout, args=(run,))
@@ -433,14 +504,13 @@ class ActionRunner:
             reader_thread = threading.Thread(
                 target=_drain, name=f"action-{run.run_id}-reader",
                 args=(process.stdout, buffer, on_event, run.run_id,
-                      stop_forwarding),
+                      stop_forwarding, event_order_lock),
                 daemon=True)
             reader_thread.start()
 
-            # Bounded so this thread -- and therefore the lock and the
-            # audit write -- cannot outlive the timeout even if some
-            # descendant still holds the pipe open after _kill_group has
-            # done everything it can (see READ_BOUND_SECONDS).
+            # The absolute, worst-case bound: even if nothing above ever
+            # confirms anything, this thread -- and therefore the lock
+            # and the audit write -- cannot outlive it.
             hard_deadline = (start_monotonic + self._timeout_seconds
                              + KILL_GRACE_SECONDS + READ_BOUND_SECONDS)
             try:
@@ -448,48 +518,79 @@ class ActionRunner:
                     max(0.0, hard_deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 returncode = None
-                note = "gave up waiting for the process to exit"
-            reader_thread.join(max(0.0, hard_deadline - time.monotonic()))
+                # The child itself was never confirmed dead within the
+                # full hard deadline; there is nothing left to wait for
+                # beyond it.
+                read_deadline = hard_deadline
+            else:
+                # The child has been reaped. From this moment, give the
+                # reader READ_BOUND_SECONDS of its own to drain and see
+                # EOF -- not whatever happens to be left of
+                # timeout_seconds's own hard deadline. A run whose
+                # direct child exits in milliseconds must not hold the
+                # lock for the rest of a 30-minute timeout merely
+                # because some unrelated descendant that escaped the
+                # process group is still holding the pipe open: nothing
+                # privileged is even alive at that point.
+                read_deadline = min(
+                    hard_deadline, time.monotonic() + READ_BOUND_SECONDS)
+            reader_thread.join(max(0.0, read_deadline - time.monotonic()))
 
             if returncode is not None and returncode >= 0:
-                # A genuine exit status was observed. Even if a cancel
-                # or a timeout was also in flight, the process must have
-                # already been exiting -- or already exited -- by the
-                # time either landed: that status is the truth of what
-                # happened, and a `note` claiming credit for ending the
-                # run must never be allowed to throw it away (an
-                # operator cancelling a run that had, unknown to them,
-                # already finished must still see its real result).
+                # A genuine exit status was observed. It is the truth of
+                # what happened and is never thrown away -- but if a
+                # signal really was dispatched to a still-live process
+                # (run.kill_attempted; see its field comment for why
+                # this is not just cancel_requested/timed_out), that is
+                # useful context worth keeping *alongside* the exit
+                # code, not silently dropped: a child that traps SIGTERM
+                # and exits 0 in response to a timeout kill is not the
+                # same event as one that simply finished on its own.
                 exit_code = returncode
-                note = None
-            elif note is None:
-                if run.cancel_requested.is_set():
-                    note = ("operator cancel attempted, but the process "
-                            "could not be confirmed stopped"
-                            if run.kill_unconfirmed
-                            else "terminated by operator cancel")
-                elif run.timed_out:
+                if run.kill_attempted:
+                    if run.cancel_requested.is_set():
+                        note = (f"exited {returncode} after an operator "
+                                "cancel sent a kill signal")
+                    elif run.timed_out:
+                        note = (
+                            f"exited {returncode} after the "
+                            f"{self._timeout_seconds} s timeout sent a "
+                            "kill signal")
+            else:
+                # No genuine exit status. Whether a cancel or a timeout
+                # gets to claim the outcome is decided by
+                # run.kill_attempted -- a signal actually reached a
+                # still-live process -- not by the bare intent flags: a
+                # cancel() or a watchdog firing after the process had
+                # already exited finds nothing left to kill and must not
+                # be credited with ending it. "Confirmed" is recomputed
+                # fresh, right here, from the process group's actual
+                # state -- never trusted from a flag _kill_group froze
+                # a couple of seconds earlier, which only ever reflected
+                # the direct child and can already be wrong by now (see
+                # _group_is_dead).
+                confirmed = process is not None and _group_is_dead(process)
+                if run.cancel_requested.is_set() and run.kill_attempted:
+                    note = ("terminated by operator cancel" if confirmed
+                            else "operator cancel attempted, but the "
+                            "process could not be confirmed stopped")
+                elif run.timed_out and run.kill_attempted:
                     note = (
-                        f"kill attempted after the {self._timeout_seconds} "
-                        "s timeout, but the process could not be "
-                        "confirmed stopped"
-                        if run.kill_unconfirmed
-                        else f"killed after the {self._timeout_seconds} "
-                        "s timeout")
+                        f"killed after the {self._timeout_seconds} s "
+                        "timeout" if confirmed else
+                        "kill attempted after the "
+                        f"{self._timeout_seconds} s timeout, but the "
+                        "process could not be confirmed stopped")
                 elif returncode is not None and returncode < 0:
                     note = f"killed by signal {-returncode}"
-            # Any remaining case -- a negative returncode with no
-            # recorded cause, or "gave up waiting" left standing from
-            # above -- has no real exit status to report; exit_code
-            # stays None and `note` records why.
+                elif confirmed:
+                    note = ("the process exited, but its exit status "
+                            "could not be observed")
+                else:
+                    note = "the process could not be confirmed stopped"
         finally:
             if watchdog is not None:
                 watchdog.cancel()
-            # Once this point is reached, the run has committed to
-            # finalising: no further "output" event may reach on_event,
-            # or a line the reader thread was mid-read on could be
-            # delivered after "finished" already has.
-            stop_forwarding.set()
             if reader_thread is not None and reader_thread.is_alive():
                 # Still blocked reading -- almost certainly a descendant
                 # that escaped the process group and still holds the
@@ -528,8 +629,16 @@ class ActionRunner:
                     _log_error(
                         f"failed to write the action_run row for "
                         f"run {run.run_id}")
-                self._emit(on_event, run.run_id, "finished",
-                          exit_code=exit_code)
+                with event_order_lock:
+                    # Set and emit under the same lock _drain checks and
+                    # calls under: whichever side gets here first
+                    # completes its whole step (check-then-call, or
+                    # this set-then-emit) before the other can start, so
+                    # a straggling "output" event can never be delivered
+                    # after "finished" already has.
+                    stop_forwarding.set()
+                    self._emit(on_event, run.run_id, "finished",
+                              exit_code=exit_code)
             finally:
                 # Whatever happened above -- including a bug in this
                 # very block -- the lock must still be released. This is
@@ -560,5 +669,5 @@ class ActionRunner:
         if process is None or process.poll() is not None:
             return
         run.timed_out = True
-        if not _kill_group(process, KILL_GRACE_SECONDS):
-            run.kill_unconfirmed = True
+        if _kill_group(process, KILL_GRACE_SECONDS) is not None:
+            run.kill_attempted = True

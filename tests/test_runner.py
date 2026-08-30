@@ -250,30 +250,52 @@ class TestOnEventExceptionMidOutputDoesNotOrphanTheChild(RunnerCase):
 
 
 class TestStdoutCloseDoesNotBlockTheWorker(RunnerCase):
-    """Critical A: closing process.stdout while the reader thread is
-    still blocked inside a read on it blocks the closer too -- the exact
-    wedge Critical 2's fix was supposed to eliminate, reintroduced by the
-    fix itself. A descendant that escapes the process group (here, via
-    `setsid`) and still holds the pipe open must not be able to block
-    the worker thread's own finalisation, even though the direct child
-    it was actually running exits in milliseconds."""
+    """Critical A / Item 1: closing process.stdout while the reader
+    thread is still blocked inside a read on it blocks the closer too --
+    the exact wedge Critical 2's fix was supposed to eliminate,
+    reintroduced by the fix itself. A descendant that escapes the
+    process group (here, via `setsid`) and still holds the pipe open
+    must not be able to block the worker thread's own finalisation, even
+    though the direct child it was actually running exits in
+    milliseconds.
 
-    def test_a_pipe_holding_escapee_does_not_block_the_worker(self):
+    Critically, the bound on how long that can take must not scale with
+    `timeout_seconds`: a run whose direct child is long gone must not
+    hold the lock for a large fraction of a 30-minute timeout merely
+    because an unrelated descendant is still holding a pipe open. This
+    is exercised with the *shipped default* timeout (1800s) precisely
+    so a regression that ties the read bound to the remaining hard
+    deadline -- rather than restarting it from the moment the child is
+    reaped -- cannot hide behind a short `timeout_seconds` in the test.
+    """
+
+    def test_a_fast_exit_with_a_pipe_holding_escapee_is_not_bound_by_the_timeout(
+            self):
         pid_file = Path(self.dir.name) / "escapee_pid"
         escapee = Action(
             "t.escapee",
             ("/bin/sh", "-c",
              f"setsid sleep 600 & echo $! > {pid_file}; exit 0"),
             root=False, risk=Risk.SAFE)
-        runner = ActionRunner(self.store, timeout_seconds=1)
+        # The shipped default. A regression that bounds the reader join
+        # by the remaining hard deadline (timeout_seconds + grace +
+        # read_bound) rather than by READ_BOUND_SECONDS from the moment
+        # the child is reaped would make this test take ~1807s instead
+        # of ~5s -- a difference no reasonable wait() bound below can
+        # mistake for a pass.
+        runner = ActionRunner(self.store, timeout_seconds=1800)
+
+        start = time.monotonic()
         runner.start(escapee, "127.0.0.1", self.events.append)
 
         # The direct child (the shell) exits in milliseconds; only the
         # detached `sleep 600` -- outside this runner's process group
-        # entirely -- keeps the pipe open. This must not be able to
-        # block the worker: bound the wait well under the escapee's own
-        # 600s lifetime so a regression here fails fast, not eventually.
-        runner.wait(9)
+        # entirely -- keeps the pipe open. This must finish in a few
+        # seconds, not "eventually": bound the wait well under even a
+        # generous multiple of READ_BOUND_SECONDS, and nowhere near
+        # timeout_seconds, so a regression here fails fast.
+        runner.wait(10)
+        elapsed = time.monotonic() - start
 
         def cleanup():
             try:
@@ -286,10 +308,22 @@ class TestStdoutCloseDoesNotBlockTheWorker(RunnerCase):
 
         self.assertFalse(
             runner.is_busy(),
-            "the worker is still busy 9s after a 1s timeout -- it is "
-            "most likely blocked inside stdout.close() waiting on an "
-            "escapee that still holds the pipe open")
-        self.assertEqual(len(self.store.read_action_runs()), 1)
+            "the worker is still busy 10s after the direct child exited "
+            "in milliseconds, with timeout_seconds=1800 -- the read "
+            "bound is most likely scaling with the run's own timeout "
+            "instead of restarting once the child was reaped")
+        self.assertLess(
+            elapsed, 10,
+            f"took {elapsed:.2f}s to finish a run whose direct child "
+            "exited in milliseconds")
+        row = self.store.read_action_runs()[0]
+        self.assertEqual(row["exit_code"], 0)
+        self.assertLess(
+            row["duration_ms"], 10_000,
+            f"duration_ms={row['duration_ms']} for a child that exited "
+            "in milliseconds -- the recorded duration is measuring how "
+            "long the escapee's pipe stayed open, not how long the "
+            "action actually ran")
 
 
 class TestExitCodeSurvivesALateCancel(RunnerCase):
@@ -336,3 +370,32 @@ class TestExitCodeSurvivesALateCancel(RunnerCase):
             "cancel", row["output"],
             "the output must not claim a cancel ended a run that had "
             "already exited on its own")
+
+
+class TestATrappedKillKeepsBothTheExitCodeAndTheReason(RunnerCase):
+    """Item 2: a genuine exit code must not silently erase *why* the
+    process ended. A child that traps SIGTERM and deliberately exits 0
+    in response to a timeout kill is not the same event as one that
+    simply ran to completion on its own -- discarding the reason (by
+    setting note = None whenever a real return code is observed, as an
+    earlier version of this method did) makes the two indistinguishable
+    in the one place an operator can tell them apart."""
+
+    def test_a_trapped_termination_records_both_the_exit_code_and_the_timeout(
+            self):
+        trapping = Action(
+            "t.trapping",
+            ("/bin/sh", "-c", 'trap "exit 0" TERM; echo hi; sleep 30'),
+            root=False, risk=Risk.SAFE)
+        runner = ActionRunner(self.store, timeout_seconds=2)
+        runner.start(trapping, "127.0.0.1", self.events.append)
+        runner.wait(15)
+
+        row = self.store.read_action_runs()[0]
+        self.assertEqual(
+            row["exit_code"], 0,
+            "the trapped exit's own genuine status must survive")
+        self.assertIn(
+            "timeout", row["output"],
+            "a real exit code must not erase the fact that a timeout "
+            "kill was what actually triggered it")

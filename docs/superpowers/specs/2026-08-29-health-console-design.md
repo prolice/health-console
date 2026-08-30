@@ -609,6 +609,11 @@ data, and translating them would make problem reports harder to compare.
 - `sudoers.d` limited to the named binaries with their arguments.
 - Headers: `Content-Security-Policy: default-src 'self'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  Amended 2026-08-30 (post-implementation): the CSP's `img-src` clause was
+  widened to `'self' data:` so that Bootstrap's vendored icons (embedded as
+  `data:image/svg+xml` URIs) render — see
+  `2026-08-30-health-console-ui-redesign.md` §4.2 correction. `script-src` and
+  `style-src` remain governed by `default-src 'self'`, unrelaxed.
 - systemd hardening: `NoNewPrivileges=no` (mandatory, `sudo` depends on it),
   `ProtectSystem=strict` with `ReadWritePaths=` limited to
   `~/.local/share/health-console` and `~/.config/health-console`, plus `PrivateTmp`

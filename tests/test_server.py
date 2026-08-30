@@ -112,6 +112,13 @@ class TestHttp(unittest.TestCase):
     def test_security_headers_are_present(self):
         headers = self.get("/").headers
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
+        # Without this clause, Bootstrap's inline data:image/svg+xml icons
+        # (the accordion chevron and the select arrow) are silently dropped
+        # by the browser as an img-src violation -- this assertion alone,
+        # unlike the default-src one above, catches that clause being
+        # dropped again.
+        self.assertIn("img-src 'self' data:",
+                      headers["Content-Security-Policy"])
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
 
     def test_path_traversal_is_refused(self):

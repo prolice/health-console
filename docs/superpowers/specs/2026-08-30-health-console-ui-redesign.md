@@ -39,7 +39,7 @@ pass as a colour palette.
 | Composition | Two modes preserved, each enriched (design document §10.1) |
 | Range selector | Global to the Expert grid, not per chart |
 | Theme | Explicit auto / light / dark control, `auto` by default |
-| Server | Unchanged. No new route, no CSP relaxation |
+| Server | Unchanged: no new route. CSP: `img-src` widened to `'self' data:`; see §4.2 correction |
 | Actions | Out of scope — separate spec |
 
 ### 2.1 Why vendored rather than a CDN or a Debian package
@@ -154,7 +154,22 @@ The rule for our own code, therefore: never a literal `style="…"` and never
 `setAttribute("style", …)`. A test enforces it, because the failure mode is
 silent — the browser drops the declaration and reports nothing.
 
-`server.py` is not modified. `CONTENT_TYPES` already covers `.css` and `.js`.
+**Correction, 2026-08-30 (post-implementation).** This section's title is no
+longer accurate, and the record is kept rather than quietly rewritten: the
+review above checked whether the CSP would block inline **styles** (it does,
+and the rule above still holds) but did not check inline **images**.
+Bootstrap 5.3.8's vendored stylesheet (`web/vendor/bootstrap.min.css`) embeds
+23 icons as `data:image/svg+xml` URIs, and two are on this page — the
+accordion chevron (`.accordion-button::after`) and the select arrow
+(`.form-select`). `default-src 'self'` covers `img-src` too, so the browser
+was blocking both silently: the accordion and language selector kept working,
+just without their icons. The fix widens `SECURITY_HEADERS` in `server.py` to
+`default-src 'self'; img-src 'self' data:` — images only. `script-src` and
+`style-src` remain governed by `default-src 'self'`, unrelaxed; a `data:` SVG
+reached through `img-src` is decoded as a raster image, not executed, so it
+carries no script capability. The `style="…"` / `setAttribute("style", …)`
+rule above is unaffected and still holds. `server.py` is otherwise
+unmodified; `CONTENT_TYPES` already covers `.css` and `.js`.
 
 ### 4.3 No Bootstrap Icons
 

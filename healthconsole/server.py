@@ -38,8 +38,18 @@ MAX_STREAMS = 8
 # the 5-minute aggregates.
 RAW_TABLE_MAX_SECONDS = 172_800
 
+# img-src widened to allow `data:` alongside 'self': Bootstrap's vendored
+# stylesheet (web/vendor/bootstrap.min.css) embeds its icons as inline
+# data:image/svg+xml URIs, and two of them are on this page -- the accordion
+# chevron (.accordion-button::after) and the select arrow (.form-select).
+# Under plain `default-src 'self'` the browser blocks both as an img-src
+# violation and drops them silently: the accordion and language selector
+# still work, they just render with no icon. This widening is images only —
+# script-src and style-src are untouched, and a data: SVG loaded through
+# img-src is decoded as a raster image, not executed, so it cannot run
+# script. Do not narrow this back to `default-src 'self'` alone.
 SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'self'",
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
 }

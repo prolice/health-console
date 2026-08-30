@@ -4151,8 +4151,8 @@ class TestApp(unittest.TestCase):
         self.js = read("app.js")
 
     def test_stays_within_budget(self):
-        self.assertLess((WEB / "app.js").stat().st_size, 80 * 1024,
-                        "80 KiB budget exceeded")
+        self.assertLess((WEB / "app.js").stat().st_size, 60 * 1024,
+                        "60 KiB budget exceeded")
 
     def test_default_locale_is_english(self):
         self.assertIn('"en"', self.js)

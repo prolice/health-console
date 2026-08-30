@@ -11,6 +11,33 @@ import { renderSimple } from "./simple.js";
 
 const DEFAULT_MODE = "simple";
 
+const THEME_KEY = "theme";
+const THEMES = ["auto", "light", "dark"];
+
+export function resolvedTheme() {
+  const choice = localStorage.getItem(THEME_KEY) || "auto";
+  if (choice !== "auto") return choice;
+  return globalThis.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark" : "light";
+}
+
+const themeListeners = [];
+// Task 9 redraws charts on this: chart colours are read from CSS custom
+// properties at draw time, so a chart drawn in light theme keeps light
+// colours on a dark page unless it is told the theme changed.
+export function whenThemeChanges(handler) { themeListeners.push(handler); }
+
+export function applyTheme(choice) {
+  const wanted = THEMES.includes(choice) ? choice : "auto";
+  localStorage.setItem(THEME_KEY, wanted);
+  document.documentElement.setAttribute("data-bs-theme", resolvedTheme());
+  for (const id of THEMES) {
+    el(`theme-${id}`).classList.toggle("active", id === wanted);
+    el(`theme-${id}`).setAttribute("aria-pressed", String(id === wanted));
+  }
+  for (const handler of themeListeners) handler();
+}
+
 function paintChrome() {
   document.title = translate("ui.title");
   el("app-title").textContent = translate("ui.title");
@@ -19,6 +46,14 @@ function paintChrome() {
   el("mode-group").setAttribute("aria-label", translate("ui.mode.group"));
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
+  el("theme-group").setAttribute("aria-label", translate("ui.theme.label"));
+  el("theme-auto").textContent = translate("ui.theme.auto");
+  el("theme-light").textContent = translate("ui.theme.light");
+  el("theme-dark").textContent = translate("ui.theme.dark");
+  el("refresh").textContent = translate("ui.refresh");
+  el("range-group").setAttribute("aria-label", translate("ui.range.group"));
+  el("probes-heading").textContent = translate("ui.expert.probes");
+  el("raw-heading").textContent = translate("ui.expert.raw");
 }
 
 function switchMode(mode) {
@@ -43,6 +78,14 @@ async function start() {
   el("locale").addEventListener("change", (event) =>
     setLocale(event.target.value));
   switchMode(localStorage.getItem("mode") || DEFAULT_MODE);
+  for (const id of THEMES) {
+    el(`theme-${id}`).addEventListener("click", () => applyTheme(id));
+  }
+  applyTheme(localStorage.getItem(THEME_KEY) || "auto");
+  // "auto" must follow the system while the page is open, not only at load.
+  globalThis.matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", () => applyTheme(
+      localStorage.getItem(THEME_KEY) || "auto"));
   whenLocaleChanges(() => {
     paintChrome();
     const state = lastKnownState();

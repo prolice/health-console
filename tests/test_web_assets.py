@@ -113,6 +113,46 @@ class TestIndex(unittest.TestCase):
         self.assertEqual(self.html.count('role="tabpanel"'), 2)
 
 
+class TestBootstrapShell(unittest.TestCase):
+    def setUp(self):
+        self.html = read("index.html")
+
+    def test_vendored_assets_are_referenced_locally(self):
+        for reference in ('href="/static/vendor/bootstrap.min.css"',
+                          'src="/static/vendor/bootstrap.bundle.min.js"',
+                          'src="/static/vendor/chart.umd.min.js"'):
+            self.assertIn(reference, self.html)
+
+    def test_no_inline_style_attribute(self):
+        # default-src 'self' drops style="..." silently -- the browser
+        # reports nothing, the declaration simply never applies.
+        self.assertNotRegex(
+            self.html, r'\sstyle="',
+            "index.html carries an inline style attribute, which the CSP drops")
+
+    def test_theme_control_is_present(self):
+        for element_id in ("theme-auto", "theme-light", "theme-dark"):
+            self.assertIn(f'id="{element_id}"', self.html)
+
+    def test_expert_containers_are_present(self):
+        for element_id in ("expert-tiles", "range-group", "refresh",
+                           "chart-grid", "probe-table", "raw"):
+            self.assertIn(f'id="{element_id}"', self.html)
+
+    def test_the_expert_placeholder_paragraph_is_gone(self):
+        self.assertNotIn('id="expert-placeholder"', self.html)
+
+
+class TestNoInlineStyleInCode(unittest.TestCase):
+    def test_our_code_never_sets_the_style_attribute(self):
+        # el.style.width = "..." is CSSOM and permitted; setAttribute("style")
+        # is an inline style attribute and is dropped by the CSP.
+        for path in JS.glob("*.js"):
+            self.assertNotIn(
+                'setAttribute("style"', path.read_text(encoding="utf-8"),
+                f"{path.name} sets the style attribute, which the CSP drops")
+
+
 class TestStyle(unittest.TestCase):
     def setUp(self):
         self.css = read("style.css")

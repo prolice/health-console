@@ -1,93 +1,66 @@
-:root {
-  color-scheme: light dark;
-  --background: #f7f7f5;
-  --card: #ffffff;
-  --text: #1a1a1a;
-  --muted: #5a5a5a;
-  --border: #d8d8d4;
-  --ok: #1c6b3a;
-  --info: #2c5a8a;
-  --attention: #8a5a00;
-  --urgent: #a02020;
+/* What Bootstrap does not do: severity colours, the two-mode layout, and
+   the dimming that says the data has frozen. Everything else is Bootstrap. */
+
+:root,
+:root[data-bs-theme="light"] {
+  --hc-ok: #1c6b3a;
+  --hc-info: #2c5a8a;
+  --hc-attention: #8a5a00;
+  --hc-urgent: #a02020;
+  --hc-grid: rgba(0, 0, 0, 0.08);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #16181a; --card: #202325; --text: #ececec;
-    --muted: #a8a8a8; --border: #34383b;
-    --ok: #6cc48d; --info: #8bb8e8; --attention: #e0b060; --urgent: #f08080;
-  }
-}
-
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  font: 16px/1.5 system-ui, sans-serif;
-  background: var(--background);
-  color: var(--text);
+:root[data-bs-theme="dark"] {
+  --hc-ok: #6cc48d;
+  --hc-info: #8bb8e8;
+  --hc-attention: #e0b060;
+  --hc-urgent: #f08080;
+  --hc-grid: rgba(255, 255, 255, 0.12);
 }
 
 .bar {
   display: flex; flex-wrap: wrap; gap: 1rem;
   align-items: center; justify-content: space-between;
-  padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1.25rem;
 }
 
-.bar h1 { font-size: 1.1rem; margin: 0; }
-
-.controls { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
-
-.modes button, .locale-field select {
-  min-height: 44px; min-width: 88px;
-  border: 1px solid var(--border); background: var(--card);
-  color: var(--text); border-radius: 8px; cursor: pointer; font: inherit;
-}
-
-.modes button[aria-selected="true"] {
-  background: var(--text); color: var(--background);
-}
-
+.controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
 .locale-field { display: flex; gap: 0.5rem; align-items: center; }
-.locale-field span { color: var(--muted); font-size: 0.9rem; }
 
-.freshness { margin: 0; padding: 0.5rem 1.25rem; color: var(--muted); }
-.freshness.stale { color: var(--attention); font-weight: 600; }
+/* Touch targets: the framework's default buttons are shorter than the 44 px
+   the design document requires. */
+.btn, .form-select { min-height: 44px; }
+#mode-group .btn, #theme-group .btn { min-width: 88px; }
+#range-group .btn { min-width: 60px; }
 
 .view { max-width: 46rem; margin: 0 auto; padding: 1.25rem; }
+.view-wide { max-width: 76rem; }
 
-.verdict {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: 14px; padding: 1.75rem; text-align: center;
-}
+#verdict-gauge { max-width: 180px; height: auto; margin-bottom: 0.5rem; }
 
-.verdict-state { font-size: 1.6rem; font-weight: 700; margin: 0 0 0.5rem; }
-.verdict-sentence { margin: 0 0 1rem; color: var(--muted); }
-.verdict-score { margin: 0; }
-
-.finding {
-  background: var(--card); border: 1px solid var(--border);
-  border-left: 5px solid var(--border);
-  border-radius: 12px; padding: 1rem 1.25rem; margin-top: 1rem;
-}
-
-.finding h2 { font-size: 1.05rem; margin: 0 0 0.35rem; }
-.finding p { margin: 0; color: var(--muted); }
+.finding { border-left-width: 4px !important; margin-top: 1rem; }
 .finding .tag { font-weight: 700; font-size: 0.85rem; }
 /* Diagnostic material (a probe's raw, untranslated failure reason), kept
    visible but visually secondary to the translated explanation above it. */
 .finding .raw-detail { margin-top: 0.5rem; font-size: 0.8rem; opacity: 0.8; }
 
-.severity-OK        { border-left-color: var(--ok); }
-.severity-OK .tag { color: var(--ok); }
-.severity-INFO      { border-left-color: var(--info); }
-.severity-INFO .tag { color: var(--info); }
-.severity-ATTENTION { border-left-color: var(--attention); }
-.severity-ATTENTION .tag { color: var(--attention); }
-.severity-URGENT    { border-left-color: var(--urgent); }
-.severity-URGENT .tag { color: var(--urgent); }
+.severity-OK        { border-left-color: var(--hc-ok) !important; }
+.severity-OK .tag   { color: var(--hc-ok); }
+.severity-INFO      { border-left-color: var(--hc-info) !important; }
+.severity-INFO .tag { color: var(--hc-info); }
+.severity-ATTENTION      { border-left-color: var(--hc-attention) !important; }
+.severity-ATTENTION .tag { color: var(--hc-attention); }
+.severity-URGENT         { border-left-color: var(--hc-urgent) !important; }
+.severity-URGENT .tag    { color: var(--hc-urgent); }
 
+.freshness.stale { color: var(--hc-attention); font-weight: 600; }
 body.stale .view { opacity: 0.45; }
+
+.chart-holder { position: relative; height: 200px; }
+.sparkline-holder { position: relative; height: 44px; margin-top: 0.5rem; }
+
+/* Retained for the "auto" theme setting, which resolves through this query. */
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark; } }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

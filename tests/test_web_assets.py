@@ -10,16 +10,56 @@ def read(name):
     return (WEB / name).read_text(encoding="utf-8")
 
 
+VENDOR = WEB / "vendor"
+
+# Files we author. vendor/ is third-party and excluded: it is read, never
+# edited, and its contents are pinned by version in vendor/LICENSES.md.
+def authored_files():
+    for path in sorted(WEB.rglob("*")):
+        if not path.is_file() or VENDOR in path.parents:
+            continue
+        if path.suffix in (".html", ".css", ".js", ".json"):
+            yield path
+
+
 class TestNoExternalResources(unittest.TestCase):
     """A diagnostic tool must work without Internet access."""
 
     def test_no_external_urls(self):
-        for name in ("index.html", "style.css", "app.js"):
-            for match in re.findall(r"https?://[^\s\"')]+", read(name)):
-                self.fail(f"{name} references an external resource: {match}")
+        # Walked recursively rather than over a hard-coded list of three
+        # files: the old form would not have noticed a URL introduced in a
+        # module that did not exist when it was written.
+        for path in authored_files():
+            text = path.read_text(encoding="utf-8")
+            for match in re.findall(r"https?://[^\s\"')]+", text):
+                self.fail(f"{path.relative_to(WEB)} references {match}")
 
     def test_no_build_step_artefacts(self):
         self.assertFalse((WEB.parent / "package.json").exists())
+
+
+class TestVendoredLibraries(unittest.TestCase):
+    """Vendored, not fetched: default-src 'self' would drop a CDN silently."""
+
+    EXPECTED = {
+        "bootstrap.min.css": 100 * 1024,
+        "bootstrap.bundle.min.js": 40 * 1024,
+        "chart.umd.min.js": 100 * 1024,
+    }
+
+    def test_every_vendored_file_is_present_and_plausible(self):
+        for name, floor in self.EXPECTED.items():
+            path = VENDOR / name
+            self.assertTrue(path.is_file(), f"vendor/{name} is missing")
+            self.assertGreater(
+                path.stat().st_size, floor,
+                f"vendor/{name} is too small to be the real library")
+
+    def test_licences_are_recorded_with_pinned_versions(self):
+        text = (VENDOR / "LICENSES.md").read_text(encoding="utf-8")
+        self.assertIn("5.3.8", text)
+        self.assertIn("4.5.1", text)
+        self.assertIn("MIT", text)
 
 
 class TestIndex(unittest.TestCase):

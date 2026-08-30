@@ -116,23 +116,18 @@ test("a tile reads null when the probe it depends on is entirely absent", () => 
   assert.equal(read({}), null);
 });
 
-test("depthMessage renders below the one-day threshold in hours, not a rounded-to-zero day count", () => {
-  // 0.9 day of history against a 1h window is not short (it is 21x the
-  // window asked for), so this isolates the hours-threshold behaviour from
-  // the short/long decision. Kills a mutation that sets the hours
-  // threshold to 0, which would make this branch unreachable: at that
-  // mutation, depthMessage(0.9, "1h") would return the days key instead,
-  // with days: 0.9 -- exactly the "0 days" rounding this feature exists to
-  // avoid once formatNumber's one-decimal display gets hold of it.
-  const { key, params } = depthMessage(0.9, "1h");
-  assert.equal(key, "ui.chart.depth_hours");
-  assert.equal(params.hours, 21.6);
-});
-
-test("depthMessage renders at or above the one-day threshold in days", () => {
-  const { key, params } = depthMessage(30, "24h");
-  assert.equal(key, "ui.chart.depth");
-  assert.equal(params.days, 30);
+test("depthMessage returns null when the window is fully covered -- no line for a chart that is, in fact, full", () => {
+  // The depth line exists to explain a *short* chart. A non-short window
+  // used to print its own depth_days instead ("History available: {days}
+  // days"), which read as a claim about the machine and contradicted
+  // itself across ranges: the same six-months-old machine said "2 days" on
+  // the 24h range (raw retention) and "90 days" on the 90d range.
+  assert.equal(depthMessage(30, "24h"), null);
+  assert.equal(depthMessage(90, "90d"), null);
+  // Also true below the one-day threshold: 0.9 day of history against a 1h
+  // window is 21x the window asked for, not short, so this must say
+  // nothing rather than fall through to some other wording.
+  assert.equal(depthMessage(0.9, "1h"), null);
 });
 
 test("depthMessage's short-hours sentence never reaches the requested window's own count", () => {
@@ -156,14 +151,30 @@ test("depthMessage's short-days sentence never rounds up to the requested window
   assert.ok(params.days < 7, "the short sentence must not name the full window");
 });
 
-test("depthMessage's long sentence is untouched by the flooring fix", () => {
-  // Only the short sentence's own number is floored; a window that
-  // genuinely is complete keeps its ordinary, rounded display -- exactly
-  // full here, so any flooring bleeding into this branch would be visible
-  // as a value below 90.
-  const { key, params } = depthMessage(90, "90d");
-  assert.equal(key, "ui.chart.depth", "90 on a 90d window is not short");
-  assert.equal(params.days, 90);
+test("depthMessage picks the singular hour key when the floored value is exactly one", () => {
+  // "Only 1 hours of history so far" is wrong grammar, and reachable
+  // whenever flooring lands exactly on 1 -- formatNumber then prints "1"
+  // with no decimal, so plural wording reads as a typo. depthDays here is
+  // just over 1/24 (one hour), well short of the 90d window requested.
+  const { key, params } = depthMessage(1.0008 / 24, "90d");
+  assert.equal(key, "ui.chart.depth_short_hour");
+  assert.equal(params.hours, 1);
+});
+
+test("depthMessage keeps the plural hour key away from exactly one", () => {
+  const { key } = depthMessage(0.02, "1h");
+  assert.equal(key, "ui.chart.depth_short_hours");
+});
+
+test("depthMessage picks the singular day key when the floored value is exactly one", () => {
+  const { key, params } = depthMessage(1.05, "90d");
+  assert.equal(key, "ui.chart.depth_short_day");
+  assert.equal(params.days, 1);
+});
+
+test("depthMessage keeps the plural day key away from exactly one", () => {
+  const { key } = depthMessage(6.97, "7d");
+  assert.equal(key, "ui.chart.depth_short");
 });
 
 test("renderProbeTable appends a header row naming the three columns", () => {

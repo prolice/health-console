@@ -679,7 +679,10 @@ health-console/
 │   ├── plausibility.py ring.py       cli.py
 │   └── probes/  cpu memory thermal network battery storage smart
 │                updates services journal processes osinfo
-├── web/  index.html  style.css  app.js  i18n/en.json  i18n/fr.json
+├── web/  index.html  style.css  i18n/en.json  i18n/fr.json
+│        js/  app.js  charts.js  dom.js  expert.js  history.js
+│             i18n.js  simple.js  stream.js  theme-boot.js
+│        vendor/  bootstrap.min.css  bootstrap.bundle.min.js  chart.umd.min.js
 ├── systemd/health-console.service
 ├── packaging/sudoers.d/health-console
 ├── tests/  fixtures/  test_verdict.py  test_store.py  test_server.py

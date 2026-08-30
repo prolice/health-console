@@ -552,8 +552,19 @@ class TestExpertMode(unittest.TestCase):
         self.assertNotIn("index === 0 ? colourVar", self.js)
 
     def test_depth_below_a_day_is_shown_in_hours_not_a_rounded_to_zero_day_count(self):
-        self.assertIn("ui.chart.depth_hours", self.js)
         self.assertIn("ui.chart.depth_short_hours", self.js)
+        self.assertIn("ui.chart.depth_short_hour", self.js)
+
+    def test_the_non_short_depth_wording_is_gone(self):
+        # The depth line exists to explain a short chart; on a full window
+        # it instead named the table's own depth_days, which reads as a
+        # claim about the machine and contradicts itself across ranges (a
+        # 24h chart says "2 days", a 90d chart on the same machine says "90
+        # days"). Checked as an exact, quoted key so "ui.chart.depth_short"
+        # (which does still exist, and contains "ui.chart.depth" as a
+        # prefix) does not make this test vacuously pass.
+        self.assertNotIn('"ui.chart.depth"', self.js)
+        self.assertNotIn('"ui.chart.depth_hours"', self.js)
 
     def test_probe_table_has_a_header_row(self):
         self.assertIn("ui.expert.probe_table.name", self.js)

@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { summarise, shouldDecimate, metricLabel,
-         drawSparkline, destroyIn, destroyAll } from "../charts.js";
+import { summarise, shouldDecimate, metricLabel, metricUnit,
+         drawSparkline, destroyIn } from "../charts.js";
 
 // A minimal stand-in for Chart.js: enough of its static getChart() registry
-// and instance destroy() for destroyIn()/destroyAll() to be exercised
-// without a real canvas or a bundler-free browser.
+// and instance destroy() for destroyIn() to be exercised without a real
+// canvas or a bundler-free browser.
 class FakeChart {
   constructor(canvas) {
     this.canvas = canvas;
@@ -76,6 +76,23 @@ test("metricLabel falls back to the raw key when the catalogue has no entry", ()
   assert.equal(metricLabel("thermal.acpitz"), "thermal.acpitz");
 });
 
+test("metricUnit classes every hwmon zone as celsius by prefix", () => {
+  assert.equal(metricUnit("thermal.acpitz"), "celsius");
+  assert.equal(metricUnit("cpu.temp.pkg"), "celsius");
+});
+
+test("metricUnit separates a percentage from a byte count sharing a card", () => {
+  // mem.available_pct and mem.swap.used are drawn together on the Memory
+  // card; disagreeing units here is what sends the second one to its own
+  // axis in drawLine().
+  assert.equal(metricUnit("mem.available_pct"), "pct");
+  assert.equal(metricUnit("mem.swap.used"), "bytes");
+});
+
+test("metricUnit has no unit for an unlisted metric such as load.1", () => {
+  assert.equal(metricUnit("load.1"), "");
+});
+
 test("destroyIn destroys the chart living in a canvas and forgets it", () => {
   withFakeChart(() => {
     const canvas = {};
@@ -88,13 +105,12 @@ test("destroyIn destroys the chart living in a canvas and forgets it", () => {
     destroyIn(container);
     assert.equal(chart.destroyCount, 1, "destroyIn did not destroy the chart");
 
-    // renderSimple() calls destroyIn() before every rebuild. If destroyIn
-    // left the instance in charts.js's own `live` registry, the next
-    // destroyAll() (or a later destroyIn() pass) would destroy it a second
-    // time -- the exact bookkeeping bug the brief warns against.
-    destroyAll();
+    // renderSimple() calls destroyIn() before every rebuild. A second pass
+    // over the same container (two renders racing, or simply called twice)
+    // must not destroy an already-destroyed chart again.
+    destroyIn(container);
     assert.equal(chart.destroyCount, 1,
-                "destroyAll destroyed a chart destroyIn had already removed");
+                "destroyIn destroyed an already-destroyed chart a second time");
   });
 });
 

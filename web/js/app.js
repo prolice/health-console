@@ -64,6 +64,11 @@ function switchMode(mode) {
   el("expert").hidden = simple;
   el("mode-simple").setAttribute("aria-selected", String(simple));
   el("mode-expert").setAttribute("aria-selected", String(!simple));
+  // Bootstrap styles .btn.active, never [aria-selected="true"]: without
+  // this the tab was correctly announced but visually identical either
+  // way. Matches applyTheme()/paintRangeButtons(), which already do this.
+  el("mode-simple").classList.toggle("active", simple);
+  el("mode-expert").classList.toggle("active", !simple);
   localStorage.setItem("mode", mode);
   if (!simple) {
     // render() only calls renderExpert() while #expert is already visible,

@@ -6,6 +6,7 @@ skips rather than fails when it is absent, and no package.json is created:
 node --test needs neither.
 """
 
+import re
 import shutil
 import subprocess
 import unittest
@@ -25,3 +26,15 @@ class TestJavaScriptUnits(unittest.TestCase):
         self.assertEqual(
             result.returncode, 0,
             f"node --test failed:\n{result.stdout}\n{result.stderr}")
+        # returncode 0 alone proves nothing ran: a glob matching no files
+        # (e.g. after web/js/tests/ got renamed) also exits 0, and the
+        # whole front-end unit suite would vanish from CI silently. Node's
+        # own summary line ("ℹ tests N" with the default reporter, "# tests
+        # N" under --test-reporter=tap) is parsed and required to be
+        # positive.
+        match = re.search(r"tests (\d+)", result.stdout)
+        self.assertIsNotNone(
+            match, f"could not find a test count in node's output:\n{result.stdout}")
+        self.assertGreater(
+            int(match.group(1)), 0,
+            "node --test reported zero tests -- the suite did not run")

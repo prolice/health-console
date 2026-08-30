@@ -118,25 +118,22 @@ export function thermalZoneSignature(state) {
   return Object.keys(thermalZones(state)).sort().join(",");
 }
 
-// Colour is the only channel separating series within one chart. Cycling a
-// small fixed palette by dataset index (rather than tying it to which card
-// this is) keeps every series in a multi-metric card visually distinct --
-// two series sharing one card no longer land on the same default colour --
-// and a dash pattern beyond the palette's length keeps a fifth+ series (a
-// machine with several thermal zones) from repeating a colour
-// indistinguishably from an earlier one.
-const COLOUR_PALETTE = ["--hc-info", "--hc-ok", "--hc-attention", "--hc-urgent"];
+// Colour is the only channel separating series within one chart, so it must
+// never carry severity meaning: these four are dedicated neutral series
+// colours (style.css), never the --hc-ok/info/attention/urgent variables
+// simple.js uses for severity -- a fourth hwmon zone must not draw in the
+// colour this console elsewhere means "act now". Colour never carries
+// information alone either: DASH_PATTERNS gives each of the first four its
+// own dash too, and a fifth+ series repeats both by the same index.
+const COLOUR_PALETTE = ["--hc-series-1", "--hc-series-2", "--hc-series-3", "--hc-series-4"];
 const DASH_PATTERNS = [[], [6, 3], [2, 2], [8, 3, 2, 3]];
 
 function seriesStyle(index) {
-  const cycle = Math.floor(index / COLOUR_PALETTE.length);
   return {
     borderColor: themeColour(COLOUR_PALETTE[index % COLOUR_PALETTE.length]),
-    borderDash: DASH_PATTERNS[cycle % DASH_PATTERNS.length],
+    borderDash: DASH_PATTERNS[index % DASH_PATTERNS.length],
   };
 }
-
-export function currentRange() { return range; }
 
 function paintRangeButtons() {
   const group = el("range-group");
@@ -263,53 +260,51 @@ function chartCard(title) {
   return { column, body };
 }
 
-// depth_days comes back from every /api/history response and, until this
-// task, was ignored on this side. Without this line, a 90 d window that
-// only holds six days of history reads as a collection failure rather than
-// as a history that has simply just begun.
-//
 // Below one day, {days} rounds to "0" under formatNumber's one-decimal
-// display (a console running twenty minutes is depth_days: 0.01) and reads
-// as a collection failure of its own -- the same falsehood this feature
-// exists to prevent, just with fewer digits. Below that threshold the
-// value is shown in hours instead, through a second pair of catalogue
-// keys.
+// display (a console running twenty minutes is depth_days: 0.01) -- its own
+// small collection failure. Below this threshold the value is shown in
+// hours instead, via a second pair of catalogue keys.
 const HOURS_BELOW_DAYS = 1;
 
-// formatNumber() rounds -- not floors -- to one decimal for display. That
-// let the short sentence's own number round up to exactly the figure the
-// window itself asks for: a depth of 6.97 on the 7d range is genuinely
-// short (isDepthShort() compares at full precision, unaffected by any of
-// this), but displayed after formatNumber's rounding it read "Only 7 days
-// of history so far" -- naming the full window as if it were the
-// shortfall. Flooring only the number shown inside the short sentence
-// keeps it from ever reaching the window's own count, without touching
-// isDepthShort's own, separately-tuned precision.
+// formatNumber() rounds, not floors: a genuinely-short depth of 6.97 on the
+// 7d range displayed as "Only 7 days of history so far" -- naming the full
+// window as the shortfall. Flooring the shown number keeps it from ever
+// reaching the window's own count (isDepthShort() itself compares at full
+// precision, unaffected by this).
 function flooredToOneDecimal(value) {
   return Math.floor(value * 10) / 10;
 }
 
 // Pure: decides which catalogue key describes a card's depth and what
-// number to interpolate into it. Exported, and depthLine() kept as a thin
-// DOM wrapper around it, so the decision -- not just the catalogue key
-// names it happens to use -- can be exercised directly, the same way
-// isDepthShort() already is.
+// number to interpolate, or null for "say nothing". Exported, with
+// depthLine() a thin DOM wrapper, so the decision itself is directly
+// testable, as isDepthShort() already is.
+//
+// Only the short case is worth a sentence -- it exists to explain a short
+// chart. A full window used to name the table's own depth_days instead: on
+// a raw-retention server that read "2 days" on the 24h range and "90 days"
+// on the 90d range for the same machine, a claim about the machine wrong by
+// 45x depending only on which range button was last clicked.
 export function depthMessage(depthDays, rangeId) {
-  const short = isDepthShort(depthDays, rangeId);
+  if (!isDepthShort(depthDays, rangeId)) return null;
   const useHours = depthDays < HOURS_BELOW_DAYS;
+  const value = flooredToOneDecimal(useHours ? depthDays * 24 : depthDays);
+  // "Only 1 hours" is wrong grammar, reachable whenever flooring lands
+  // exactly on 1 (formatNumber then shows no decimal). A singular key per
+  // unit covers it; every other value keeps the ordinary plural wording.
+  const singular = value === 1;
   const key = useHours
-    ? (short ? "ui.chart.depth_short_hours" : "ui.chart.depth_hours")
-    : (short ? "ui.chart.depth_short" : "ui.chart.depth");
-  const raw = useHours ? depthDays * 24 : depthDays;
-  const value = short ? flooredToOneDecimal(raw) : raw;
+    ? (singular ? "ui.chart.depth_short_hour" : "ui.chart.depth_short_hours")
+    : (singular ? "ui.chart.depth_short_day" : "ui.chart.depth_short");
   return { key, params: useHours ? { hours: value } : { days: value } };
 }
 
 function depthLine(depthDays) {
+  const message = depthMessage(depthDays, range);
+  if (!message) return null;
   const paragraph = document.createElement("p");
   paragraph.className = "small text-body-secondary mt-2 mb-0";
-  const { key, params } = depthMessage(depthDays, range);
-  paragraph.textContent = translate(key, params);
+  paragraph.textContent = translate(message.key, message.params);
   return paragraph;
 }
 
@@ -372,8 +367,12 @@ export async function redrawCharts() {
       points: drawable[0].series.points,
       // The server returns points already ascending by timestamp, which is
       // exactly the precondition normalized: true promises (see charts.js).
+      // metric travels with its dataset so drawLine() can tell which
+      // series disagree in unit (see charts.js's metricUnit()) and split
+      // them onto a second axis, without having to guess from the card.
       datasets: drawable.map(({ metric, series: s }, index) => ({
         label: metricLabel(metric),
+        metric,
         data: s.points.map(([x, y]) => ({ x, y })),
         normalized: true,
         borderWidth: 2, fill: false, tension: 0.25, pointRadius: 0,
@@ -390,9 +389,10 @@ export async function redrawCharts() {
     // Only the drawn series count towards "how much history is there": an
     // empty series (already excluded from `drawable` above) always reports
     // depth_days: 0 from the server, and folding that into the minimum
-    // would print "0 days" beneath a chart that is, in fact, full.
-    card.body.append(
-      depthLine(Math.min(...drawable.map(({ series: s }) => s.depthDays))));
+    // would print "0 days" beneath a chart that is, in fact, full. No line
+    // at all when the window is not short (see depthMessage()).
+    const depth = depthLine(Math.min(...drawable.map(({ series: s }) => s.depthDays)));
+    if (depth) card.body.append(depth);
   }
 }
 

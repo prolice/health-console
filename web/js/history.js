@@ -1,5 +1,6 @@
 // History fetching. One cache entry per (metric, window); the server does
-// the aggregation, this module only avoids asking twice for the same thing.
+// the aggregation, this module only avoids asking twice for the same thing
+// -- and only for as long as that thing is still likely to be current.
 
 import { authHeaders } from "./i18n.js";
 
@@ -20,9 +21,34 @@ export function cacheKey(metric, range) {
 
 export function clearCache() { cache.clear(); }
 
+// Window length in seconds, keyed like RANGES.
+const RANGE_SECONDS = { "1h": 3600, "24h": 86400, "7d": 604800, "90d": 7776000 };
+
+// A cached series need not refresh as often as the data changes: a 90 d
+// window gains nothing from being re-fetched every couple of seconds. But
+// an unbounded cache is the reported bug -- a Simple-mode sparkline frozen
+// at page-load time under a banner claiming the page is current. A
+// fortieth of the window surfaces a change well within a normal viewing
+// session (~90s on the shortest range, ~54h on the longest), floored at
+// 30s so the shortest range cannot turn into a request storm.
+const MIN_TTL_MS = 30_000;
+const TTL_FRACTION = 1 / 40;
+
+export function cacheTtlMs(range) {
+  const seconds = RANGE_SECONDS[range];
+  return seconds ? Math.max(MIN_TTL_MS, seconds * 1000 * TTL_FRACTION) : MIN_TTL_MS;
+}
+
+// Pure, and exported, so the staleness decision itself -- not just its
+// effect buried inside fetchSeries() -- can be unit-tested directly.
+export function isStale(fetchedAt, range, now = Date.now()) {
+  return now - fetchedAt >= cacheTtlMs(range);
+}
+
 export async function fetchSeries(metric, range, { force = false } = {}) {
   const key = cacheKey(metric, range);
-  if (!force && cache.has(key)) return cache.get(key);
+  const cached = cache.get(key);
+  if (!force && cached && !isStale(cached.fetchedAt, range)) return cached.series;
 
   let response;
   try {
@@ -58,11 +84,7 @@ export async function fetchSeries(metric, range, { force = false } = {}) {
     throw new HistoryError(`${metric} ${range}: depth_days is not a number`);
   }
 
-  const series = {
-    points: body.points,
-    depthDays: body.depth_days,
-    table: body.table || "",
-  };
-  cache.set(key, series);
+  const series = { points: body.points, depthDays: body.depth_days };
+  cache.set(key, { series, fetchedAt: Date.now() });
   return series;
 }

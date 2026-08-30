@@ -36,9 +36,12 @@ REQUIRED_UI_KEYS = frozenset({
     # Chart card groups
     "ui.chart.group.cpu", "ui.chart.group.thermal",
     "ui.chart.group.memory", "ui.chart.group.battery",
-    # Chart states
-    "ui.chart.empty", "ui.chart.depth", "ui.chart.depth_short",
-    "ui.chart.depth_hours", "ui.chart.depth_short_hours",
+    # Chart states. Only the "short" wording exists: the depth line exists
+    # to explain a short chart, and on a full window it instead named the
+    # table's own depth_days -- contradicting itself across range buttons
+    # on any machine whose raw retention is shorter than its 90d history.
+    "ui.chart.empty", "ui.chart.depth_short", "ui.chart.depth_short_day",
+    "ui.chart.depth_short_hours", "ui.chart.depth_short_hour",
     "ui.chart.summary", "ui.chart.unavailable",
     # Expert sections
     "ui.expert.overview", "ui.expert.probes", "ui.expert.raw",

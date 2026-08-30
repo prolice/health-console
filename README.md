@@ -78,7 +78,8 @@ release).
 Then open `http://127.0.0.1:8787/`. `Ctrl+C` stops it.
 
 **By default it listens on every interface**, not only on loopback, and prints
-the LAN address alongside the local one. Nothing is exposed by that on its own:
+the LAN address alongside the local one when it can determine one. Nothing is
+exposed by that on its own:
 without a token in the configuration, every non-loopback request is refused with
 a `401`. Set `bind = "127.0.0.1"` if you want it not to listen beyond this
 machine at all.

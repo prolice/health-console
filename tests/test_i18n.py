@@ -3,6 +3,7 @@ import re
 import unittest
 from pathlib import Path
 
+from healthconsole.actions import ACTION_IDS
 from healthconsole.findings import FINDING_IDS, FINDING_PARAMS, Severity
 
 I18N = Path(__file__).resolve().parent.parent / "web" / "i18n"
@@ -54,6 +55,18 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.expert.probe_table.detail",
     # Errors
     "ui.error.history",
+    # Actions tab
+    "ui.mode.actions", "ui.actions.available", "ui.actions.audit",
+    "ui.actions.none", "ui.actions.run", "ui.actions.running",
+    "ui.actions.output", "ui.actions.confirm.title",
+    "ui.actions.confirm.cancel", "ui.actions.confirm.go",
+    "ui.actions.result.ok", "ui.actions.result.failed",
+    "ui.actions.result.killed",
+    "ui.actions.audit.when", "ui.actions.audit.what",
+    "ui.actions.audit.source", "ui.actions.audit.outcome",
+    "ui.actions.audit.empty",
+    "ui.error.action.busy", "ui.error.action.refused",
+    "ui.error.action.failed",
 })
 
 
@@ -184,6 +197,27 @@ class TestNoJargonLeaksToSimpleMode(unittest.TestCase):
                             term, prose,
                             f"{locale}:finding.{finding_id}.{suffix} leaks "
                             f"'{term}' into Simple mode")
+
+
+class TestActionCatalogueWording(unittest.TestCase):
+    def test_every_action_has_a_label_a_description_and_a_confirmation(self):
+        from healthconsole.actions import Risk
+        for locale in locales():
+            catalogue = load(locale)
+            for action_id in sorted(ACTION_IDS):
+                for suffix in ("label", "description", "confirm"):
+                    key = f"action.{action_id}.{suffix}"
+                    self.assertIn(key, catalogue, f"{locale} lacks {key}")
+
+    def test_every_risk_level_has_a_word_and_an_icon(self):
+        # Colour never carries the state alone.
+        from healthconsole.actions import Risk
+        for locale in locales():
+            catalogue = load(locale)
+            for risk in Risk:
+                for suffix in ("word", "icon"):
+                    key = f"risk.{risk.value}.{suffix}"
+                    self.assertIn(key, catalogue, f"{locale} lacks {key}")
 
 
 if __name__ == "__main__":

@@ -13,10 +13,13 @@ let locale = FALLBACK_LOCALE;
 let numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
 let timeFormat = new Intl.DateTimeFormat(locale,
   { hour: "2-digit", minute: "2-digit" });
+let dateFormat = new Intl.DateTimeFormat(locale,
+  { day: "2-digit", month: "short" });
 
 export function currentLocale() { return locale; }
 export function formatNumber(value) { return numberFormat.format(value); }
 export function formatTime(date) { return timeFormat.format(date); }
+export function formatDate(date) { return dateFormat.format(date); }
 
 // setLocale() previously called paintChrome() and render() directly. It now
 // notifies a listener instead, so i18n.js does not depend on the modules
@@ -134,6 +137,8 @@ export async function setLocale(target) {
   numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
   timeFormat = new Intl.DateTimeFormat(locale,
     { hour: "2-digit", minute: "2-digit" });
+  dateFormat = new Intl.DateTimeFormat(locale,
+    { day: "2-digit", month: "short" });
   localStorage.setItem("locale", locale);
   document.documentElement.lang = locale;
   el("locale").value = locale;

@@ -189,6 +189,22 @@ class TestModuleLayout(unittest.TestCase):
                         f"60 KiB budget exceeded: {total} bytes")
 
 
+class TestChartsDegradeGracefully(unittest.TestCase):
+    def test_missing_chart_library_does_not_take_the_page_down(self):
+        source = js("charts.js")
+        self.assertIn("chartsAvailable", source)
+        self.assertIn("globalThis.Chart", source)
+
+    def test_charts_carry_a_text_alternative(self):
+        # A <canvas> is invisible to a screen reader.
+        source = js("charts.js")
+        self.assertIn('role", "img"', source)
+        self.assertIn("ui.chart.summary", source)
+
+    def test_reduced_motion_disables_chart_animation(self):
+        self.assertIn("prefers-reduced-motion", js("charts.js"))
+
+
 class TestI18nModule(unittest.TestCase):
     def setUp(self):
         self.js = js("i18n.js")

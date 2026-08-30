@@ -48,6 +48,12 @@ ACTION_IDS: frozenset[str] = frozenset(CATALOGUE)
 
 
 def lookup(action_id: str) -> Action:
+    if not isinstance(action_id, str):
+        # A caller handing this a list, dict or other unhashable value
+        # would otherwise hit CATALOGUE[action_id] and raise a bare
+        # TypeError, breaking the published contract that any bad
+        # identifier -- not just an unknown one -- raises UnknownAction.
+        raise UnknownAction(action_id)
     try:
         return CATALOGUE[action_id]
     except KeyError:

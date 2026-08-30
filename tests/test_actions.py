@@ -56,5 +56,12 @@ class TestLookup(unittest.TestCase):
         with self.assertRaises(UnknownAction):
             lookup("rm.everything")
 
+    def test_an_unhashable_id_raises_unknown_action_not_type_error(self):
+        # The published contract is that any bad identifier -- not just
+        # an unknown string -- raises UnknownAction. A list arriving from
+        # a careless caller must not reach the dict subscript unguarded.
+        with self.assertRaises(UnknownAction):
+            lookup(["apt.refresh"])
+
     def test_action_ids_matches_the_catalogue(self):
         self.assertEqual(ACTION_IDS, frozenset(CATALOGUE))

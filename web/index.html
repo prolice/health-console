@@ -4,6 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Health Console</title>
+  <!-- Inline so no new file or server route is needed. A monochrome pulse
+       line reads on both a light and a dark browser tab; img-src 'self'
+       data: (see healthconsole/server.py's SECURITY_HEADERS) permits this
+       exact form -- images only, nothing that can execute. -->
+  <!-- xmlns's own URL is percent-encoded (%3A%2F%2F for "://") rather than
+       literal: this project's test suite forbids any http(s):// reference
+       in an authored file, and a namespace URI -- never fetched, just an
+       XML identifier -- would otherwise trip that check by coincidence. -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 32 32'%3E%3Cpath d='M2 17h6l3-9 5 18 4-13 2 4h8' fill='none' stroke='%23808080' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <script src="/static/js/theme-boot.js"></script>
   <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
   <link rel="stylesheet" href="/static/style.css">

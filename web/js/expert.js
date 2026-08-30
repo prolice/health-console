@@ -124,15 +124,25 @@ export function thermalZoneSignature(state) {
 // simple.js uses for severity -- a fourth hwmon zone must not draw in the
 // colour this console elsewhere means "act now". Colour never carries
 // information alone either: DASH_PATTERNS gives each of the first four its
-// own dash too, and a fifth+ series repeats both by the same index.
+// own dash too (see seriesStyleTokens() below).
 const COLOUR_PALETTE = ["--hc-series-1", "--hc-series-2", "--hc-series-3", "--hc-series-4"];
 const DASH_PATTERNS = [[], [6, 3], [2, 2], [8, 3, 2, 3]];
 
-function seriesStyle(index) {
+// Dash must cycle on the same period as colour (4) but offset by one
+// pattern per lap, or index 4 repeats index 0's (colour, dash) exactly.
+// Raw token, not a resolved colour, so this stays pure and testable
+// without a DOM; seriesStyle() below resolves it for Chart.js.
+export function seriesStyleTokens(index) {
+  const dashOffset = Math.floor(index / DASH_PATTERNS.length);
   return {
-    borderColor: themeColour(COLOUR_PALETTE[index % COLOUR_PALETTE.length]),
-    borderDash: DASH_PATTERNS[index % DASH_PATTERNS.length],
+    colour: COLOUR_PALETTE[index % COLOUR_PALETTE.length],
+    borderDash: DASH_PATTERNS[(index + dashOffset) % DASH_PATTERNS.length],
   };
+}
+
+function seriesStyle(index) {
+  const { colour, borderDash } = seriesStyleTokens(index);
+  return { borderColor: themeColour(colour), borderDash };
 }
 
 function paintRangeButtons() {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { chartCards, isDepthShort, depthMessage, renderProbeTable,
-         thermalZoneSignature, TILES } from "../expert.js";
+         thermalZoneSignature, seriesStyleTokens, TILES } from "../expert.js";
 
 // A minimal stand-in for the DOM, just enough for renderProbeTable() (the
 // only exported function here that touches document.createElement /
@@ -241,4 +241,28 @@ test("thermalZoneSignature agrees with chartCards on when there are no zones to 
   const emptyZones = thermalZoneSignature({ probes: { thermal: { status: "ok", zones: {} } } });
   assert.equal(noState, unavailable);
   assert.equal(unavailable, emptyZones);
+});
+
+test("seriesStyleTokens gives no two of the first sixteen series the same (colour, dash) pair", () => {
+  // A typical laptop's thermal card draws cpu.temp.pkg plus one series per
+  // hwmon zone -- five to eight zones is not unusual, i.e. six to nine
+  // series. A regression that cycles colour and dash on the same period
+  // (index % 4 for both) makes series 4 byte-identical in style to series
+  // 0, which this guards against well past that range.
+  const seen = new Set();
+  for (let index = 0; index < 16; index += 1) {
+    const { colour, borderDash } = seriesStyleTokens(index);
+    const key = JSON.stringify([colour, borderDash]);
+    assert.ok(!seen.has(key), `index ${index} repeats an earlier (colour, dash) pair`);
+    seen.add(key);
+  }
+});
+
+test("seriesStyleTokens varies both colour and dash across the first four series", () => {
+  // The regression this replaced (all four solid, distinguished by colour
+  // alone) broke "colour never carries information alone"; the fix must not
+  // just move the duplicate further out.
+  const styles = [0, 1, 2, 3].map(seriesStyleTokens);
+  assert.equal(new Set(styles.map((s) => s.colour)).size, 4);
+  assert.equal(new Set(styles.map((s) => JSON.stringify(s.borderDash))).size, 4);
 });

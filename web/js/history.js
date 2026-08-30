@@ -12,6 +12,10 @@ export class HistoryError extends Error {}
 
 const cache = new Map();
 
+// The only clock this module reads; a mutable object so a test can stub
+// clock.now (and must restore it) without a real timer.
+export const clock = { now: () => Date.now() };
+
 // Unambiguous by construction: a delimiter-joined key collides as soon as
 // either component can contain the delimiter, and nothing here enforces
 // that they cannot.
@@ -41,7 +45,7 @@ export function cacheTtlMs(range) {
 
 // Pure, and exported, so the staleness decision itself -- not just its
 // effect buried inside fetchSeries() -- can be unit-tested directly.
-export function isStale(fetchedAt, range, now = Date.now()) {
+export function isStale(fetchedAt, range, now = clock.now()) {
   return now - fetchedAt >= cacheTtlMs(range);
 }
 
@@ -85,6 +89,6 @@ export async function fetchSeries(metric, range, { force = false } = {}) {
   }
 
   const series = { points: body.points, depthDays: body.depth_days };
-  cache.set(key, { series, fetchedAt: Date.now() });
+  cache.set(key, { series, fetchedAt: clock.now() });
   return series;
 }

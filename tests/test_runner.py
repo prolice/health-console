@@ -5,7 +5,9 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import healthconsole.runner as runner_module
 from healthconsole.actions import Action, Risk
 from healthconsole.runner import ActionBusy, ActionRunner
 from healthconsole.store import Store
@@ -399,3 +401,196 @@ class TestATrappedKillKeepsBothTheExitCodeAndTheReason(RunnerCase):
             "timeout", row["output"],
             "a real exit code must not erase the fact that a timeout "
             "kill was what actually triggered it")
+
+
+class TestABlockedListenerCannotHoldTheRunLock(RunnerCase):
+    """The defect this module has now produced four times over, in four
+    different places: something the caller controls, or something that
+    waits on the child's output, ends up on the path between the audit
+    write and the release of the run lock.
+
+    Round 1 put a blocking read there. Round 2 put a close() that waits
+    on that read there. Round 3 put a lock there that `_drain` holds
+    across the caller's own `on_event`. Each was a correct fix for the
+    finding in front of it and a new instance of the same shape.
+
+    A listener that never returns is the general case of all of them:
+    an SSE handler writing to a client that has stopped reading its
+    socket. It may stall its own event stream for as long as it likes.
+    It may not stop the child being reaped, the row being written, or
+    the next action ever running.
+    """
+
+    # timeout_seconds=5 makes this module's own worst case
+    # 5 + KILL_GRACE_SECONDS (2) + READ_BOUND_SECONDS (5) = 12s. The
+    # assertion is against that bound, not against "eventually": the
+    # whole point is that the deadline belongs to this module and not
+    # to the callback.
+    TIMEOUT_SECONDS = 5
+    WORST_CASE_SECONDS = 12.0
+
+    def busy_until(self, runner, deadline):
+        """Wall-clock seconds until is_busy() goes false, or None."""
+        start = time.monotonic()
+        while time.monotonic() < deadline:
+            if not runner.is_busy():
+                return time.monotonic() - start
+            time.sleep(0.02)
+        return None
+
+    def blocking_listener(self, phase):
+        """A listener that parks forever on `phase`, and the release
+        switch that lets it go again during cleanup."""
+        release = threading.Event()
+        reached = threading.Event()
+
+        def listener(event):
+            self.events.append(event)
+            if event["phase"] == phase:
+                reached.set()
+                release.wait(120)
+
+        return listener, reached, release
+
+    def test_a_listener_blocked_on_an_output_event_releases_the_lock(self):
+        listener, reached, release = self.blocking_listener("output")
+        runner = ActionRunner(self.store, timeout_seconds=self.TIMEOUT_SECONDS)
+
+        def unblock():
+            release.set()
+            runner.wait(15)
+
+        self.addCleanup(unblock)
+
+        start = time.monotonic()
+        runner.start(ECHO, "127.0.0.1", listener)
+        self.assertTrue(
+            reached.wait(10), "the listener never received an output event")
+
+        freed = self.busy_until(
+            runner, start + self.WORST_CASE_SECONDS)
+        self.assertIsNotNone(
+            freed,
+            f"still busy {self.WORST_CASE_SECONDS}s after starting a run "
+            "whose only problem is a listener that has not returned from "
+            "an 'output' event -- the caller's callback is on the path "
+            "between the audit write and the lock release")
+        self.assertEqual(
+            len(self.store.read_action_runs()), 1,
+            "the audit row must be written even though the listener is "
+            "still parked inside an output event")
+
+        # And the runner is genuinely reusable, not merely reporting
+        # itself free: a second run must start and finish while the
+        # first run's listener is still blocked.
+        second = []
+        runner.start(TRUE, "127.0.0.1", second.append)
+        runner.wait(10)
+        self.assertEqual(len(self.store.read_action_runs()), 2)
+
+    def test_a_listener_blocked_on_the_finished_event_releases_the_lock(self):
+        # The same shape one step later: the "finished" emission itself
+        # sits between the audit write and the lock release, so a
+        # listener that parks there wedges the runner just as surely as
+        # one that parks on output.
+        listener, reached, release = self.blocking_listener("finished")
+        runner = ActionRunner(self.store, timeout_seconds=self.TIMEOUT_SECONDS)
+
+        def unblock():
+            release.set()
+            runner.wait(15)
+
+        self.addCleanup(unblock)
+
+        start = time.monotonic()
+        runner.start(TRUE, "127.0.0.1", listener)
+        self.assertTrue(
+            reached.wait(10), "the listener never received a finished event")
+
+        freed = self.busy_until(runner, start + self.WORST_CASE_SECONDS)
+        self.assertIsNotNone(
+            freed,
+            f"still busy {self.WORST_CASE_SECONDS}s after starting a run "
+            "whose only problem is a listener that has not returned from "
+            "the 'finished' event")
+        self.assertEqual(len(self.store.read_action_runs()), 1)
+
+    def test_every_event_reaches_the_caller_on_one_dedicated_thread(self):
+        # The structural half of the same invariant: `on_event` is
+        # called from exactly one place in the module, on a thread that
+        # is neither the worker (which owns the run lock and the audit
+        # write) nor the caller's own. If a future change calls it from
+        # the worker again, that thread is back on the caller's leash
+        # and this fails.
+        idents = []
+
+        def listener(event):
+            idents.append(threading.get_ident())
+            self.events.append(event)
+
+        self.runner.start(ECHO, "127.0.0.1", listener)
+        self.runner.wait(10)
+
+        phases = [event["phase"] for event in self.events]
+        self.assertEqual(phases[0], "started")
+        self.assertEqual(phases[-1], "finished")
+        self.assertEqual(
+            len(set(idents)), 1,
+            f"events were delivered from {len(set(idents))} different "
+            "threads; a caller's on_event must be serialised onto one")
+        self.assertNotIn(
+            threading.get_ident(), idents,
+            "events must not be delivered on the caller's own thread")
+
+
+class TestTheKillReasonIsRecordedBeforeTheSignal(RunnerCase):
+    """The reason a run ended must be recorded before the signal that
+    ends it goes out, not after the kill call returns.
+
+    `_kill_group` returns the instant the child dies -- and that death
+    is the same event that wakes the worker's `process.wait()`. Setting
+    `kill_attempted` from the return value therefore races the audit
+    write: the worker can reach the note computation first and record a
+    trapped `exit 0` as an ordinary clean exit, losing the only trace
+    that a timeout kill was what triggered it. The margin that usually
+    hides this is `Popen.wait()`'s polling granularity, which is an
+    accident of the standard library rather than any ordering
+    guarantee, so this test removes it by widening the gap on purpose.
+    """
+
+    def test_a_slow_kill_path_does_not_lose_the_timeout_reason(self):
+        trapping = Action(
+            "t.trap_slow",
+            ("/bin/sh", "-c", 'trap "exit 0" TERM; echo hi; sleep 30'),
+            root=False, risk=Risk.SAFE)
+
+        real_kill_group = runner_module._kill_group
+
+        def slow_kill_group(*args, **kwargs):
+            # Everything the real kill path does, then a delay standing
+            # in for any bookkeeping done after it returns. A reason
+            # recorded before the signal is unaffected by this; one
+            # recorded afterwards loses the race to the audit write.
+            result = real_kill_group(*args, **kwargs)
+            time.sleep(0.25)
+            return result
+
+        patcher = mock.patch.object(
+            runner_module, "_kill_group", slow_kill_group)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        runner = ActionRunner(self.store, timeout_seconds=2)
+        runner.start(trapping, "127.0.0.1", self.events.append)
+        runner.wait(15)
+
+        row = self.store.read_action_runs()[0]
+        self.assertEqual(
+            row["exit_code"], 0,
+            "the trapped exit's own genuine status must survive")
+        self.assertIn(
+            "timeout", row["output"],
+            "the timeout that triggered the kill was recorded only "
+            "after the kill call returned, so the audit row lost it -- "
+            "a trapped SIGTERM exit 0 now reads as an ordinary clean "
+            "exit")

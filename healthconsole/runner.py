@@ -20,18 +20,29 @@ is to get them wrong:
    the row is written, by actually probing the process group -- never
    from a flag frozen a few seconds earlier, which can already be wrong
    by the time anyone reads it.
-3. The worker thread that owns (1) can never be blocked by drainage of
-   the child's output: not the reading itself (a separate thread), not
-   closing the pipe afterwards (skipped while that thread is still using
-   it), and not by how long some *unrelated* descendant takes to let go
-   of the pipe once the actual child is already gone -- the read bound
-   restarts from the moment the child is reaped, not from the run's own
-   (possibly 30-minute) timeout.
+3. Nothing the caller controls, and nothing that waits on the child's
+   output, sits on the path between the audit write and the release of
+   the run lock. This is the one rule this module has broken most
+   often, in a different place each time: a blocking read on the worker
+   thread; then a `close()` that waits on that read; then a lock held
+   across the caller's own `on_event` that the worker had to acquire
+   before it could finish. Each of those was a correct fix for the
+   finding in front of it and a fresh instance of the same shape.
+
+   It is now held structurally rather than by discipline. `on_event` is
+   called from exactly one place in this module -- `_EventStream._pump`
+   -- on a thread of its own that holds no lock while it calls, is not
+   the worker, and is not the reader. Every other path only appends to
+   a deque under a mutex that is never held across anything that can
+   block. A listener that never returns can stall its own event stream
+   and nothing else. See `_EventStream` for the argument in full.
 4. `is_busy()` can say "free" only once (1) is already true for the
    previous run -- otherwise a second run's row could land before the
    first's, and the log would no longer describe the order things
-   actually happened in. The same ordering applies to events: an
-   "output" event can never reach a caller after "finished" has.
+   actually happened in. Events keep their own ordering guarantee: an
+   "output" event can never reach a caller after "finished" has,
+   because they travel the same FIFO queue and "finished" is appended
+   and the queue closed to later events in one atomic step.
 """
 
 from __future__ import annotations
@@ -44,6 +55,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -80,20 +92,37 @@ READ_BOUND_SECONDS = 5.0
 OUTPUT_HEAD_LINES = 200
 OUTPUT_TAIL_LINES = 200
 
+# How many undelivered events a run's live stream will hold for a
+# listener that is not keeping up before it starts dropping the oldest
+# "output" events. Same reasoning as OUTPUT_HEAD/TAIL_LINES, one layer
+# out: the audit row is the record, the event stream is a convenience
+# for whoever is watching, and a watcher that has stopped reading must
+# not be able to grow this process's memory without bound. Decoupling
+# `on_event` from the worker (see _EventStream) is what makes a slow
+# listener harmless; it must not make it expensive instead.
+EVENT_QUEUE_MAX = 1000
+
 
 class ActionBusy(Exception):
     """Raised by start() when a run is already in flight."""
 
 
-def _log_error(message: str) -> None:
+def _log(message: str) -> None:
     # No logging framework exists elsewhere in this codebase (see
     # store.py's corruption handling) -- stderr, with the same prefix,
     # is the existing convention.
     print(f"health-console: {message}", file=sys.stderr)
+
+
+def _log_error(message: str) -> None:
+    """_log, plus the traceback of the exception being handled. Only
+    valid from inside an `except` block; use _log elsewhere."""
+    _log(message)
     traceback.print_exc(file=sys.stderr)
 
 
-def _kill_group(process: subprocess.Popen, grace: float) -> bool | None:
+def _kill_group(process: subprocess.Popen, grace: float,
+                run: "_Run") -> None:
     """Terminate a process and everything in its process group.
 
     `start_new_session=True` at Popen time makes `process.pid` the
@@ -103,56 +132,83 @@ def _kill_group(process: subprocess.Popen, grace: float) -> bool | None:
     can leave those descendants holding the pipe open forever: the
     direct child exits, but a read loop waiting for EOF never sees it.
 
-    Returns `None` if there was nothing to do -- the process was already
-    dead when checked, so no signal was ever dispatched, and neither a
-    cancel nor a timeout can claim credit for anything that happened to
-    it. Otherwise returns whether the target could be confirmed dead
-    within this call's own short, bounded wait. That result is a
-    preliminary signal only, useful for logging -- the row this
-    function's callers eventually write is decided from a *fresh* check
-    at audit-write time (see `_group_is_dead`), not from a bool frozen
-    here: `process.wait()` only ever confirms the direct child, and an
-    in-group sibling that ignored the signal (or one that dies a moment
-    after this function gives up) would make a value cached here already
-    wrong by the time anyone reads it.
+    Reports nothing back to its caller. Its one lasting effect besides
+    the signals themselves is `run.kill_attempted`, and that is set
+    here, *before* the first signal goes out, rather than by a caller
+    inspecting a return value afterwards -- see the comment at the
+    assignment for why the difference is load-bearing. Whether the kill
+    is believed to have worked is not decided here at all: the row is
+    written from a fresh probe of the group at audit-write time (see
+    `_group_is_dead`), because `process.wait()` only ever confirms the
+    direct child, and an in-group sibling that ignored the signal (or
+    one that dies a moment after this function gives up waiting) would
+    make anything cached here already wrong by the time anyone reads
+    it. This function's own bounded waits exist only to give SIGTERM a
+    grace period before SIGKILL.
+
+    Never raises: a kill that cannot even be dispatched (EPERM, the
+    expected outcome for the one privileged action this console ships)
+    is logged, and the row says the process could not be confirmed
+    stopped.
     """
     if process.poll() is not None:
-        return None
+        # Already gone. No signal is dispatched, so neither a cancel nor
+        # a timeout can claim credit for having ended this run.
+        return
+    # Recorded before the signal goes out, and never after it returns.
+    # The signal landing and the child dying are the same event that
+    # wakes the worker's process.wait(), so a flag assigned once the
+    # kill path has returned is in a race with the audit write that it
+    # can lose: with the gap widened to 60 ms the reason vanished from
+    # the row 10 times out of 10, turning a child that trapped SIGTERM
+    # and exited 0 into an ordinary clean exit. The margin that usually
+    # hid this came from Popen.wait()'s ~50 ms polling granularity --
+    # an accident of the standard library, not a happens-before. Set
+    # first and unset below on the one path that proves nothing was
+    # delivered, and there is no window at all.
+    run.kill_attempted = True
     try:
         pgid = os.getpgid(process.pid)
     except ProcessLookupError:
-        return None
+        run.kill_attempted = False
+        return
     except OSError as exc:
+        # Not evidence that the process is gone, so the attempt stands
+        # and the row will say it could not be confirmed stopped.
         _log_error(f"could not resolve the process group id: {exc}")
-        return False
+        return
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
-        return None
+        # The group vanished in the microseconds since the liveness
+        # check above. Nothing was delivered, so nothing here ended the
+        # run and the flag must not claim otherwise.
+        run.kill_attempted = False
+        return
     except OSError as exc:
         # PermissionError (a subclass of OSError) is EPERM: no member of
         # the group is signalable by this uid. This is the expected
         # outcome for the one privileged action this console ships, not
-        # a bug to let propagate into the caller.
+        # a bug to let propagate into the caller. The attempt was real
+        # and the row should say so.
         _log_error(f"could not send SIGTERM to the process group: {exc}")
-        return False
+        return
     try:
         process.wait(grace)
-        return True
+        return
     except subprocess.TimeoutExpired:
         pass
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
-        return True
+        return
     except OSError as exc:
         _log_error(f"could not send SIGKILL to the process group: {exc}")
-        return False
+        return
     try:
         process.wait(grace)
-        return True
     except subprocess.TimeoutExpired:
-        return False
+        pass
 
 
 def _group_is_dead(process: subprocess.Popen) -> bool:
@@ -197,6 +253,13 @@ class _OutputBuffer:
     with a marker recording how many lines were dropped in between --
     the shape most useful for diagnosing a runaway action, without
     holding an unbounded amount of it in RAM first.
+
+    Its lock is the only one the reader thread and the worker thread
+    share, which makes it the one place a fourth instance of this
+    module's recurring defect could grow (see the module docstring,
+    property 3). It is held across a list append and a join of at most
+    OUTPUT_HEAD_LINES + OUTPUT_TAIL_LINES strings, and must never be
+    held across a read, a wait, or a call into the caller's code.
     """
 
     def __init__(self) -> None:
@@ -225,6 +288,154 @@ class _OutputBuffer:
             return "\n".join(parts)
 
 
+class _EventStream:
+    """Delivers one run's events to the caller's `on_event`, from one
+    dedicated thread that owns nothing.
+
+    This class exists so that a single rule holds by construction
+    rather than by remembering it at each call site:
+
+        Nothing the caller controls, and nothing that waits on the
+        child's output, may sit on the path between the audit write and
+        the release of the run lock.
+
+    Three separate fixes to this module each restored that rule where
+    it had just been broken and re-broke it somewhere new: the reader
+    loop ran on the worker thread, so a blocked read wedged it; then
+    the worker closed the pipe out from under the reader, and
+    `TextIOWrapper.close()` waits for the blocked read it shares a
+    buffer lock with; then a lock taken to order events was held across
+    `on_event` by the reader and had to be acquired by the worker
+    before it could release the run lock. Different mechanisms, one
+    shape: a wait the caller or the pipe controls, reachable from the
+    thread that owes the world an audit row.
+
+    So `on_event` is called from exactly one place in this module --
+    `_pump` below -- on a thread that is not the worker, is not the
+    reader, and holds no lock of this module's while it calls.
+    Producers (`emit`, `close`) only append to a deque under `_cv`'s
+    mutex, which is never held across anything that can block. A
+    listener that never returns therefore stalls its own event stream
+    and nothing else: the child is still reaped, the row is still
+    written, the run lock is still released, and the next action can
+    still start.
+
+    Ordering -- an "output" event can never reach a caller after
+    "finished" -- is a property of the queue rather than of a second
+    lock papering over a check-then-act: events are delivered FIFO, and
+    `close()` appends the final event and refuses every later one in
+    the same atomic step.
+    """
+
+    def __init__(self, on_event: Callable[[dict], None],
+                 run_id: str) -> None:
+        self._on_event = on_event
+        self._run_id = run_id
+        self._cv = threading.Condition()
+        self._pending: deque[dict] = deque()
+        self._closed = False
+        self._dropped = 0
+        self._thread = threading.Thread(
+            target=self._pump, name=f"action-{run_id}-events", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def join(self, timeout: float | None = None) -> None:
+        """Wait for every queued event to have been delivered.
+
+        Only for callers that have explicitly asked to block on
+        delivery (`ActionRunner.wait`). Nothing inside this module's
+        own run path may call this: doing so would put the caller's
+        callback back on the worker's leash, which is the whole thing
+        this class exists to prevent.
+        """
+        self._thread.join(timeout)
+
+    def emit(self, phase: str, **fields) -> None:
+        """Queue one event. Never blocks on the caller's callback."""
+        with self._cv:
+            if self._closed:
+                # The run has already emitted "finished". A line that
+                # a lingering reader thread is only now producing must
+                # not be delivered after it.
+                return
+            if len(self._pending) >= EVENT_QUEUE_MAX:
+                self._drop_one_locked()
+            self._pending.append(
+                {"run_id": self._run_id, "phase": phase, **fields})
+            self._cv.notify()
+
+    def close(self, phase: str | None = None, **fields) -> None:
+        """Append a last event, if any, and refuse every later one.
+
+        One atomic step, so no event queued after this can overtake the
+        final one, and the pump thread finishes once the queue drains.
+        Called from the worker's `finally` block: it must stay a deque
+        append under a mutex, never a wait on delivery.
+        """
+        with self._cv:
+            if self._closed:
+                return
+            if phase is not None:
+                self._pending.append(
+                    {"run_id": self._run_id, "phase": phase, **fields})
+            self._closed = True
+            self._cv.notify()
+
+    def _drop_one_locked(self) -> None:
+        # Called with `self._cv` held. Drops the oldest "output" event:
+        # the live stream is worth less than the memory of an unbounded
+        # backlog, and the audit row keeps the output regardless. In
+        # practice the leftmost event is always an "output" one -- the
+        # pump pops "started" before it calls, and "finished" closes
+        # the queue -- so the scan below is an O(1) popleft except in a
+        # startup ordering too narrow to rely on.
+        for index, event in enumerate(self._pending):
+            if event["phase"] == "output":
+                del self._pending[index]
+                break
+        else:
+            self._pending.popleft()
+        self._dropped += 1
+        if self._dropped == 1:
+            _log(
+                f"the event listener for run {self._run_id} is not "
+                "keeping up; dropping the oldest output events from its "
+                "live stream (the audit row still records all of them)")
+
+    def _pump(self) -> None:
+        forward_output = True
+        while True:
+            with self._cv:
+                while not self._pending and not self._closed:
+                    self._cv.wait()
+                if not self._pending:
+                    break
+                event = self._pending.popleft()
+            if event["phase"] == "output" and not forward_output:
+                # This listener has already raised once on an output
+                # event. Keep draining the queue so the thread still
+                # finishes, but stop calling a callback that has shown
+                # it is broken -- the output itself is still recorded
+                # in the audit row either way.
+                continue
+            try:
+                # The one call into code this module does not control,
+                # made here and nowhere else, holding nothing.
+                self._on_event(event)
+            except Exception:  # noqa: BLE001 -- caller's code
+                _log_error(
+                    f"on_event raised while delivering "
+                    f"'{event['phase']}' for run {self._run_id}")
+                if event["phase"] == "output":
+                    forward_output = False
+        if self._dropped:
+            _log(
+                f"{self._dropped} output events were dropped from the "
+                f"live stream for run {self._run_id}")
+
+
 @dataclass
 class _Run:
     """State for the one run currently in flight.
@@ -249,56 +460,39 @@ class _Run:
     # watchdog fired) regardless of whether there was anything left to
     # kill. A cancel or a timeout that finds the process already exited
     # must not claim credit for ending it; this flag is what tells the
-    # note-computation logic the difference.
+    # note-computation logic the difference. Written only by
+    # `_kill_group`, and there only before the signal it describes goes
+    # out -- a caller setting it from a return value is racing the
+    # audit write, and loses (see the comment at the assignment).
     kill_attempted: bool = False
 
 
-def _drain(stream, buffer: _OutputBuffer, on_event: Callable[[dict], None],
-          run_id: str, stop_forwarding: threading.Event,
-          event_order_lock: threading.Lock) -> None:
+def _drain(stream, buffer: _OutputBuffer, events: _EventStream,
+           run_id: str) -> None:
     """Read a process's combined stdout/stderr, line by line.
 
-    Runs in its own thread for two reasons: a caller callback that
-    raises (an SSE listener whose browser tab closed, mid-output) must
-    not unwind this loop and leave the rest of the output undrained and
-    the child unaccounted for; and the worker thread waiting on the
-    process itself (see ActionRunner._run) must never be blocked on
-    drainage of a pipe some descendant process still holds open --
-    including, critically, when that thread later closes the stream:
-    this loop may still be blocked inside a read on it, and that close()
-    call blocks until the read returns (see _run's finally block).
+    Runs in its own thread so the worker thread waiting on the process
+    itself (see ActionRunner._run) is never blocked on drainage of a
+    pipe some descendant process still holds open -- including when
+    that thread later closes the stream: this loop may still be blocked
+    in a read on it, and `close()` waits for that read to return (see
+    _run's finally block).
 
-    `stop_forwarding` is set once the run has committed to finalising --
-    after which no further "output" event may reach `on_event`, or a
-    line delivered by a lingering read (one this thread was still
-    blocked in when the worker gave up waiting for it) could arrive
-    after the "finished" event already has. Checking it and calling
-    `on_event` is not enough on its own to guarantee that ordering,
-    though: "check, then act" has a window between the two in which the
-    finalising thread can run entirely (set the flag, emit "finished")
-    before this thread's already-in-flight decision to call `on_event`
-    executes. `event_order_lock`, held by both this check-then-call and
-    the finalising thread's set-then-emit (see _run), closes that
-    window: whichever side gets the lock first completes its whole
-    step before the other can start.
+    Every line goes to two places, neither of which can block this
+    loop: `buffer`, which is what the audit row is written from, and
+    `events`, which only appends to a queue another thread delivers
+    from. In particular this loop never calls the caller's `on_event`
+    itself. An earlier version did, which meant a listener that raised
+    could unwind the loop and leave the rest of the output undrained,
+    and -- once a lock was added to order those calls against the
+    "finished" event -- meant a listener that merely *blocked* could
+    keep the worker from ever releasing the run lock.
     """
-    event_failed = False
     try:
         for line in stream:
             line = line.rstrip("\n")
             buffer.append(line)
-            with event_order_lock:
-                if not event_failed and not stop_forwarding.is_set():
-                    try:
-                        on_event({"run_id": run_id, "phase": "output",
-                                  "line": line})
-                    except Exception:  # noqa: BLE001 -- caller's code
-                        event_failed = True
-                        _log_error(
-                            f"on_event raised while streaming output "
-                            f"for run {run_id}; no longer forwarding "
-                            "its output events (still recording them "
-                            "for the audit row)")
+            events.emit("output", line=line)
     except Exception:  # noqa: BLE001
         # Reading itself should not raise -- errors="replace" at Popen
         # time rules out UnicodeDecodeError -- but this loop must not be
@@ -315,9 +509,10 @@ class ActionRunner:
     the child process -- it exits cleanly, it exits with an error, the
     binary does not exist, it outlives its timeout, or an operator
     cancels it -- exactly one `action_run` row is written before the
-    lock is released, and neither a broken `on_event` callback nor a
-    failing store write can prevent that release. See the module
-    docstring for why that guarantee is the point of this class.
+    lock is released, and neither a broken `on_event` callback, nor one
+    that blocks and never returns, nor a failing store write can
+    prevent that release. See the module docstring for why that
+    guarantee is the point of this class.
     """
 
     def __init__(self, store: Store, timeout_seconds: int = 1800,
@@ -328,13 +523,26 @@ class ActionRunner:
         self._lock = threading.Lock()
         self._current: _Run | None = None
         self._thread: threading.Thread | None = None
+        self._events: _EventStream | None = None
 
     def is_busy(self) -> bool:
         # Reflects whether the lock is held, not whether a process
         # object exists: the lock is only released once the audit row
-        # has been written (or the write has failed and been logged) and
-        # the "finished" event has been delivered, so "not busy" always
-        # means the previous run is fully accounted for.
+        # has been written (or the write has failed and been logged), so
+        # "not busy" always means the previous run is fully accounted
+        # for in the audit log -- which is the thing a second run's row
+        # must not be able to land ahead of.
+        #
+        # It does *not* mean the previous run's "finished" event has
+        # reached the caller. It deliberately cannot: delivery calls the
+        # caller's own callback, and putting that on the path to this
+        # release is exactly the defect the module docstring's property
+        # 3 describes. So a caller polling this can see "free" while an
+        # SSE listener has not yet been told the run ended, and a next
+        # run's "started" can be delivered (on that run's own stream)
+        # first. Every event carries its run_id for that reason; a
+        # caller that needs delivery to have happened should use
+        # wait(), which joins the event stream too.
         acquired = self._lock.acquire(blocking=False)
         if acquired:
             self._lock.release()
@@ -349,6 +557,7 @@ class ActionRunner:
         # try: an exception anywhere in this window must still release
         # the lock, or it leaks permanently with nothing left to try
         # another run.
+        events: _EventStream | None = None
         try:
             run = _Run(run_id=secrets.token_hex(8))
             # Assigned synchronously, in the caller's thread, before the
@@ -360,21 +569,53 @@ class ActionRunner:
             self._current = run
             argv = (list(self._sudo) + list(action.argv)) if action.root \
                 else list(action.argv)
+            # Created here, in the caller's thread, rather than inside
+            # the worker: wait() must be able to join it the moment
+            # start() has returned, or a caller that starts a run and
+            # immediately waits for it could be told the run is over
+            # before its "finished" event has been delivered.
+            events = _EventStream(on_event, run.run_id)
             thread = threading.Thread(
                 target=self._run, name=f"action-{run.run_id}",
-                args=(run, action, source, argv, on_event), daemon=True)
+                args=(run, action, source, argv, events), daemon=True)
+            events.start()
             thread.start()
         except Exception:
+            if events is not None:
+                # Nothing will ever emit on this stream; let its thread
+                # finish rather than leaving it parked on the condition.
+                events.close()
             self._current = None
             self._lock.release()
             raise
         self._thread = thread
+        self._events = events
         return run.run_id
 
     def wait(self, timeout: float | None = None) -> None:
+        """Block until the last started run has finished and all of its
+        events have been delivered.
+
+        The second half is why `timeout` matters: event delivery calls
+        the caller's own `on_event`, so a listener that never returns
+        can hold this method for as long as it likes. That is safe --
+        the run itself is over, its row is written and the lock
+        released long before this returns -- but a caller that passes
+        no timeout is choosing to wait on its own callback.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        def remaining() -> float | None:
+            if deadline is None:
+                return None
+            return max(0.0, deadline - time.monotonic())
+
         thread = self._thread
         if thread is not None:
-            thread.join(timeout)
+            thread.join(remaining())
+        events = self._events
+        if events is not None:
+            events.join(remaining())
 
     def cancel(self, run_id: str | None = None) -> None:
         """Terminate the run in flight, if any.
@@ -394,11 +635,11 @@ class ActionRunner:
         impossible; the no-argument form keeps cancelling "whatever is
         current" for callers that do not.
 
-        Never raises: `_kill_group` reports failure (a permission
-        error, or a kill that could not be confirmed) through its
-        return value rather than an exception, so a caller wiring this
-        into an HTTP handler cannot turn "the operator clicked cancel"
-        into a 500, and shutdown() can always reach its own wait().
+        Never raises: `_kill_group` logs a kill it could not even
+        dispatch (a permission error) rather than letting it propagate,
+        so a caller wiring this into an HTTP handler cannot turn "the
+        operator clicked cancel" into a 500, and shutdown() can always
+        reach its own wait().
 
         Blocks its caller for up to roughly 2 * KILL_GRACE_SECONDS (SIGTERM,
         wait, SIGKILL, wait again) when there is a live process to act
@@ -414,9 +655,7 @@ class ActionRunner:
         run.cancel_requested.set()
         process = run.process
         if process is not None:
-            result = _kill_group(process, KILL_GRACE_SECONDS)
-            if result is not None:
-                run.kill_attempted = True
+            _kill_group(process, KILL_GRACE_SECONDS, run)
         # If process is still None, Popen() has not returned yet (or is
         # about to raise). The worker checks cancel_requested itself,
         # immediately after assigning run.process, so this is not a
@@ -440,6 +679,11 @@ class ActionRunner:
         shutdown path exists precisely to run when something has
         already gone wrong, and it must not itself become the reason
         the store closes out from under a run still in flight.
+
+        `timeout` also covers delivering the run's remaining events to
+        `on_event` (see wait()), so a listener that has stopped
+        returning costs this method its timeout and nothing more: the
+        row is already written and the lock already released by then.
         """
         try:
             self.cancel()
@@ -450,7 +694,7 @@ class ActionRunner:
         self.wait(timeout)
 
     def _run(self, run: _Run, action: Action, source: str,
-             argv: list[str], on_event: Callable[[dict], None]) -> None:
+             argv: list[str], events: _EventStream) -> None:
         start_wall = time.time()
         start_monotonic = time.monotonic()
         buffer = _OutputBuffer()
@@ -459,11 +703,8 @@ class ActionRunner:
         watchdog: threading.Timer | None = None
         process: subprocess.Popen | None = None
         reader_thread: threading.Thread | None = None
-        stop_forwarding = threading.Event()
-        event_order_lock = threading.Lock()
         try:
-            self._emit(on_event, run.run_id, "started",
-                      action_id=action.id)
+            events.emit("started", action_id=action.id)
             try:
                 process = subprocess.Popen(
                     argv, stdout=subprocess.PIPE,
@@ -492,8 +733,7 @@ class ActionRunner:
                 # cancel() ran before Popen() returned. Honour it the
                 # instant the process exists, rather than leaving it to
                 # run to its full timeout unrescued.
-                if _kill_group(process, KILL_GRACE_SECONDS) is not None:
-                    run.kill_attempted = True
+                _kill_group(process, KILL_GRACE_SECONDS, run)
 
             watchdog = threading.Timer(
                 self._timeout_seconds, self._on_timeout, args=(run,))
@@ -503,8 +743,7 @@ class ActionRunner:
             assert process.stdout is not None
             reader_thread = threading.Thread(
                 target=_drain, name=f"action-{run.run_id}-reader",
-                args=(process.stdout, buffer, on_event, run.run_id,
-                      stop_forwarding, event_order_lock),
+                args=(process.stdout, buffer, events, run.run_id),
                 daemon=True)
             reader_thread.start()
 
@@ -629,16 +868,17 @@ class ActionRunner:
                     _log_error(
                         f"failed to write the action_run row for "
                         f"run {run.run_id}")
-                with event_order_lock:
-                    # Set and emit under the same lock _drain checks and
-                    # calls under: whichever side gets here first
-                    # completes its whole step (check-then-call, or
-                    # this set-then-emit) before the other can start, so
-                    # a straggling "output" event can never be delivered
-                    # after "finished" already has.
-                    stop_forwarding.set()
-                    self._emit(on_event, run.run_id, "finished",
-                              exit_code=exit_code)
+                # Appends the "finished" event and refuses every later
+                # one, atomically, so a line a lingering reader is only
+                # now producing cannot be delivered after it. This is a
+                # deque append under a mutex held across nothing that
+                # can block -- the caller's own on_event runs on the
+                # stream's thread, off this thread's path to the lock
+                # release below. An earlier version called on_event
+                # from right here, under a lock the reader also held
+                # across on_event, which meant a listener that never
+                # returned meant a run lock that was never released.
+                events.close("finished", exit_code=exit_code)
             finally:
                 # Whatever happened above -- including a bug in this
                 # very block -- the lock must still be released. This is
@@ -647,27 +887,14 @@ class ActionRunner:
                 self._current = None
                 self._lock.release()
 
-    @staticmethod
-    def _emit(on_event: Callable[[dict], None], run_id: str,
-              phase: str, **fields) -> None:
-        # `on_event` is a callback into code this module does not
-        # control -- an SSE handler writing to a socket whose other end
-        # may have gone away. Letting an exception from it escape here
-        # would, depending on where it happened, either skip the audit
-        # write entirely or leave the lock held forever (see the
-        # module's "started"/"finished" call sites). Neither is
-        # acceptable, so it is always swallowed and logged instead.
-        try:
-            on_event({"run_id": run_id, "phase": phase, **fields})
-        except Exception:  # noqa: BLE001
-            _log_error(
-                f"on_event raised while emitting '{phase}' for "
-                f"run {run_id}; ignoring it")
-
     def _on_timeout(self, run: _Run) -> None:
         process = run.process
         if process is None or process.poll() is not None:
             return
+        # Both flags are set before anything that can end the process:
+        # the moment a signal lands, the worker is free to write the
+        # row, and a reason recorded after that point is a reason the
+        # operator never sees. `kill_attempted` is set inside
+        # `_kill_group` for the same reason.
         run.timed_out = True
-        if _kill_group(process, KILL_GRACE_SECONDS) is not None:
-            run.kill_attempted = True
+        _kill_group(process, KILL_GRACE_SECONDS, run)

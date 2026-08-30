@@ -20,22 +20,39 @@ is to get them wrong:
    the row is written, by actually probing the process group -- never
    from a flag frozen a few seconds earlier, which can already be wrong
    by the time anyone reads it.
-3. Nothing the caller controls, and nothing that waits on the child's
-   output, sits on the path between the audit write and the release of
-   the run lock. This is the one rule this module has broken most
-   often, in a different place each time: a blocking read on the worker
-   thread; then a `close()` that waits on that read; then a lock held
-   across the caller's own `on_event` that the worker had to acquire
-   before it could finish. Each of those was a correct fix for the
-   finding in front of it and a fresh instance of the same shape.
+3. THE RULE, in the only form that has survived a review:
 
-   It is now held structurally rather than by discipline. `on_event` is
-   called from exactly one place in this module -- `_EventStream._pump`
-   -- on a thread of its own that holds no lock while it calls, is not
-   the worker, and is not the reader. Every other path only appends to
-   a deque under a mutex that is never held across anything that can
-   block. A listener that never returns can stall its own event stream
-   and nothing else. See `_EventStream` for the argument in full.
+       No I/O of any kind -- including this module's own logging --
+       under `_cv` or `_OutputBuffer._lock`, and none between the audit
+       write and `self._lock.release()`.
+
+   Read that as a grep, not as an argument. It is checkable by looking
+   at five lines. Every earlier wording of it required reasoning about
+   four threads at once, and four successive rounds of fixes each got
+   that reasoning right for the case in front of them and wrong
+   somewhere new:
+
+   - a blocking read on the worker thread;
+   - then a `close()` that waits on that read;
+   - then a lock held across the caller's own `on_event` which the
+     worker had to acquire before it could release the run lock;
+   - then this module's *own* `_log` call, under `_cv`, on the
+     reader's queue-drop path. A write to a stderr nobody is draining
+     is an unbounded wait -- a full pipe blocks forever -- so that left
+     the reader holding the very mutex the worker takes in `close()`.
+
+   Each is the same thing: an unbounded wait reachable from the thread
+   that owes the world an audit row. Only three categories can produce
+   one here -- the caller's `on_event`, reads of the child's pipe, and
+   I/O this module performs itself -- and all three are now off that
+   path. `on_event` is called from exactly one place,
+   `_EventStream._pump`, on a thread of its own that holds no lock
+   while it calls and is neither the worker nor the reader. The pipe is
+   read only by `_drain`, and every wait on it is bounded. Logging
+   happens only outside both mutexes, and in the worker only after
+   `self._lock.release()`. `tests/test_runner.py` enforces the rule
+   mechanically, by parsing this file, rather than by asking a reader
+   to notice.
 4. `is_busy()` can say "free" only once (1) is already true for the
    previous run -- otherwise a second run's row could land before the
    first's, and the log would no longer describe the order things
@@ -254,12 +271,12 @@ class _OutputBuffer:
     the shape most useful for diagnosing a runaway action, without
     holding an unbounded amount of it in RAM first.
 
-    Its lock is the only one the reader thread and the worker thread
-    share, which makes it the one place a fourth instance of this
-    module's recurring defect could grow (see the module docstring,
-    property 3). It is held across a list append and a join of at most
-    OUTPUT_HEAD_LINES + OUTPUT_TAIL_LINES strings, and must never be
-    held across a read, a wait, or a call into the caller's code.
+    Its lock is one of the two this module's threads contend on -- the
+    other is `_EventStream._cv` -- and the rule in the module
+    docstring's property 3 names both: no I/O under either. It is held
+    across a list append and a join of at most OUTPUT_HEAD_LINES +
+    OUTPUT_TAIL_LINES strings, and must never be held across a read, a
+    wait, a log call, or a call into the caller's code.
     """
 
     def __init__(self) -> None:
@@ -314,7 +331,10 @@ class _EventStream:
     `_pump` below -- on a thread that is not the worker, is not the
     reader, and holds no lock of this module's while it calls.
     Producers (`emit`, `close`) only append to a deque under `_cv`'s
-    mutex, which is never held across anything that can block. A
+    mutex, which is never held across anything that can block --
+    including `_log`, which is why `_drop_one_locked` returns a flag
+    for its caller to write out after the block rather than logging
+    from inside it. A
     listener that never returns therefore stalls its own event stream
     and nothing else: the child is still reaped, the row is still
     written, the run lock is still released, and the next action can
@@ -354,6 +374,7 @@ class _EventStream:
 
     def emit(self, phase: str, **fields) -> None:
         """Queue one event. Never blocks on the caller's callback."""
+        first_drop = False
         with self._cv:
             if self._closed:
                 # The run has already emitted "finished". A line that
@@ -361,10 +382,25 @@ class _EventStream:
                 # not be delivered after it.
                 return
             if len(self._pending) >= EVENT_QUEUE_MAX:
-                self._drop_one_locked()
+                first_drop = self._drop_one_locked()
             self._pending.append(
                 {"run_id": self._run_id, "phase": phase, **fields})
             self._cv.notify()
+        # Logged out here, never inside the block above. Writing to
+        # stderr is an unbounded wait -- a pipe nobody is reading blocks
+        # forever once its 64 KiB buffer fills -- and the thread that
+        # triggers drops is the reader. Logging under the mutex left the
+        # reader holding the one lock the worker must take in close()
+        # before it can release the run lock: measured, that wedged the
+        # runner permanently (still busy at 60 s, every later start()
+        # refused, shutdown(10) returning still busy). See the module
+        # docstring's property 3: this module's own logging is I/O like
+        # any other.
+        if first_drop:
+            _log(
+                f"the event listener for run {self._run_id} is not "
+                "keeping up; dropping the oldest output events from its "
+                "live stream (the audit row still records all of them)")
 
     def close(self, phase: str | None = None, **fields) -> None:
         """Append a last event, if any, and refuse every later one.
@@ -383,8 +419,12 @@ class _EventStream:
             self._closed = True
             self._cv.notify()
 
-    def _drop_one_locked(self) -> None:
-        # Called with `self._cv` held. Drops the oldest "output" event:
+    def _drop_one_locked(self) -> bool:
+        # Called with `self._cv` held, and therefore does no I/O of any
+        # kind -- it returns whether this was the run's first drop and
+        # leaves the caller to log it after releasing the mutex.
+        #
+        # Drops the oldest "output" event:
         # the live stream is worth less than the memory of an unbounded
         # backlog, and the audit row keeps the output regardless. In
         # practice the leftmost event is always an "output" one -- the
@@ -398,11 +438,7 @@ class _EventStream:
         else:
             self._pending.popleft()
         self._dropped += 1
-        if self._dropped == 1:
-            _log(
-                f"the event listener for run {self._run_id} is not "
-                "keeping up; dropping the oldest output events from its "
-                "live stream (the audit row still records all of them)")
+        return self._dropped == 1
 
     def _pump(self) -> None:
         forward_output = True
@@ -852,6 +888,7 @@ class ActionRunner:
             if note is not None:
                 buffer.append(f"[{note}]")
             duration_ms = int((time.monotonic() - start_monotonic) * 1000)
+            write_failure: str | None = None
             try:
                 try:
                     self._store.write_action_run(
@@ -865,9 +902,16 @@ class ActionRunner:
                     # can never start another action afterwards would be
                     # worse -- indistinguishable, from then on, from an
                     # action stuck forever.
-                    _log_error(
-                        f"failed to write the action_run row for "
-                        f"run {run.run_id}")
+                    #
+                    # Only *formatted* here. Writing it to stderr is I/O
+                    # -- an unbounded wait on whoever is reading that fd
+                    # -- and nothing unbounded may sit between the audit
+                    # write and the lock release. Logging here wedged
+                    # the runner exactly as the drop-path log did:
+                    # measured with stderr stalled, still busy at 60 s,
+                    # every later start() refused, shutdown(10)
+                    # returning still busy.
+                    write_failure = traceback.format_exc()
                 # Appends the "finished" event and refuses every later
                 # one, atomically, so a line a lingering reader is only
                 # now producing cannot be delivered after it. This is a
@@ -886,6 +930,14 @@ class ActionRunner:
                 # cannot be audited must still not wedge the next one.
                 self._current = None
                 self._lock.release()
+            if write_failure is not None:
+                # After the release, deliberately. A stalled stderr can
+                # now cost this worker thread (and a wait() that is
+                # joining it, bounded by its own timeout) but no longer
+                # the run lock: is_busy() is already false and the next
+                # action can already start.
+                _log(f"failed to write the action_run row for "
+                     f"run {run.run_id}\n{write_failure.rstrip()}")
 
     def _on_timeout(self, run: _Run) -> None:
         process = run.process

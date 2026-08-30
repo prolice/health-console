@@ -1,5 +1,10 @@
+import ast
 import os
+import random
 import signal
+import subprocess
+import sys
+import textwrap
 import tempfile
 import threading
 import time
@@ -722,3 +727,318 @@ class TestTheEventStreamRefusesEventsAfterItCloses(unittest.TestCase):
             delivered, ["started", "output", "finished"],
             "an event emitted after the stream closed reached the "
             "listener after it had been told the run finished")
+
+
+# The repository root, so a child process can import healthconsole.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+
+# Prelude for the stalled-stderr children below: stderr is dup2'd onto
+# the write end of a pipe nobody reads, pre-filled to its capacity, so
+# the very next write to it blocks forever. Results go to a saved
+# duplicate of the real stdout.
+_STALL_STDERR = """
+import os, sys, threading, time
+sys.path.insert(0, {root!r})
+out = os.fdopen(os.dup(1), "w", buffering=1)
+_r, _w = os.pipe()
+os.set_blocking(_w, False)
+try:
+    while True:
+        os.write(_w, b"x" * 4096)
+except BlockingIOError:
+    pass
+os.set_blocking(_w, True)
+os.dup2(_w, 2)
+from healthconsole.actions import Action, Risk
+from healthconsole.runner import ActionBusy, ActionRunner
+
+def report(runner, budget):
+    t0 = time.monotonic()
+    freed = None
+    while time.monotonic() - t0 < budget:
+        if not runner.is_busy():
+            freed = time.monotonic() - t0
+            break
+        time.sleep(0.02)
+    print("FREED " + (str(round(freed, 3)) if freed is not None else "NEVER"),
+          file=out)
+    os._exit(0)
+"""
+
+
+class StalledStderrCase(unittest.TestCase):
+    """This module's own logging is I/O, and I/O is an unbounded wait.
+
+    A write to stderr blocks forever once the far end stops draining --
+    a 64 KiB pipe nobody reads, a full disk, a terminal under flow
+    control. That makes `_log` and `_log_error` exactly as dangerous on
+    the path to the run lock as the caller's `on_event` is, and it is
+    the category three rounds of review and one of my own passes all
+    failed to check: I concluded "structural for the caller, convention
+    for the pipe" and never looked at the logging at all.
+
+    Both children below run out-of-process, because dup2'ing stderr
+    onto a full pipe inside the test runner would swallow its output
+    and hang the suite if the wedge came back.
+    """
+
+    def run_child(self, body, budget=45):
+        script = _STALL_STDERR.format(root=_REPO_ROOT) + textwrap.dedent(body)
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True,
+            timeout=budget + 30, cwd=_REPO_ROOT)
+        line = [l for l in done.stdout.splitlines() if l.startswith("FREED")]
+        self.assertTrue(
+            line, f"the child produced no result; stdout={done.stdout!r}")
+        return line[0].split()[1]
+
+
+class TestLoggingUnderTheQueueMutexCannotWedgeTheRunner(StalledStderrCase):
+    """Instance four. `_drop_one_locked` ran with `_cv` held and logged
+    the first drop from inside that block. The thread that triggers
+    drops is the reader, so a stalled stderr left the reader holding
+    the one mutex the worker must take in `events.close()` before it
+    can release the run lock -- the exact shape the _EventStream rework
+    existed to eliminate, reintroduced by that rework's own logging.
+    """
+
+    def test_a_stalled_stderr_on_the_drop_path_still_frees_the_lock(self):
+        # timeout_seconds=5 puts this module's own worst case at
+        # 5 + KILL_GRACE_SECONDS (2) + READ_BOUND_SECONDS (5) = 12s.
+        freed = self.run_child("""
+            chatty = Action("t.chatty", ("/bin/sh", "-c", "seq 1 20000"),
+                            root=False, risk=Risk.SAFE)
+            reached, release = threading.Event(), threading.Event()
+            def listener(event):
+                if event["phase"] == "output" and not reached.is_set():
+                    reached.set(); release.wait(300)
+
+            class Store:
+                def write_action_run(self, *a, **k): pass
+
+            runner = ActionRunner(Store(), timeout_seconds=5)
+            runner.start(chatty, "127.0.0.1", listener)
+            reached.wait(10)
+            report(runner, 40)
+        """)
+        self.assertNotEqual(
+            freed, "NEVER",
+            "the run lock was never released: the reader is blocked "
+            "writing to a stalled stderr while holding the event "
+            "queue's mutex, and the worker cannot take it to emit "
+            "'finished'")
+        self.assertLess(
+            float(freed), 15.0,
+            f"took {freed}s to free the lock, past this module's own "
+            "worst case of 12s")
+
+
+class TestLoggingAFailedAuditWriteCannotWedgeTheRunner(StalledStderrCase):
+    """The same root cause, one step later and narrower: the worker's
+    own `_log_error` for a failed store write sat inside the `try`
+    whose `finally` releases the run lock. It needs the write to have
+    failed first, but a stalled stderr then wedges the runner just as
+    completely.
+    """
+
+    def test_a_stalled_stderr_after_a_failed_write_still_frees_the_lock(self):
+        # A quiet action, so no queue drops: this isolates the worker's
+        # own logging from the reader's.
+        freed = self.run_child("""
+            TRUE = Action("t.true", ("/bin/true",), root=False, risk=Risk.SAFE)
+
+            class BrokenStore:
+                def write_action_run(self, *a, **k):
+                    raise RuntimeError("disk full")
+
+            runner = ActionRunner(BrokenStore(), timeout_seconds=5)
+            runner.start(TRUE, "127.0.0.1", lambda event: None)
+            report(runner, 40)
+        """)
+        self.assertNotEqual(
+            freed, "NEVER",
+            "the run lock was never released: the worker is blocked "
+            "writing a failed-audit-write message to a stalled stderr, "
+            "between the audit write and the lock release")
+        self.assertLess(float(freed), 15.0, f"took {freed}s to free the lock")
+
+
+class TestCloseIsAtomicAgainstAConcurrentEmit(unittest.TestCase):
+    """The property the whole _EventStream design rests on, which until
+    now was pinned by nothing: a mutant that splits `close()` into two
+    critical sections -- appending "finished" and setting `_closed`
+    non-atomically -- passed the entire runner suite.
+
+    `TestTheEventStreamRefusesEventsAfterItCloses` carries the refusal
+    half and kills a delete-the-check mutant in milliseconds, but it
+    calls `close()` and then `emit()` sequentially, so `_closed` is
+    already true either way and it cannot see atomicity at all.
+
+    So: race them. An `output` emit and `close("finished")` are
+    released from a shared barrier with jitter, with the delivery
+    thread parked inside the caller's callback so a backlog exists and
+    a wrongly-accepted event is genuinely handed over rather than
+    merely queued behind a thread that has run dry. Exactly two
+    outcomes are legal -- the emit took the mutex first and is
+    delivered before "finished", or it took it second and is refused --
+    and this asserts both occur (otherwise nothing was actually racing)
+    and that a third never does.
+
+    Resolution, measured, because this test is easy to over-trust: it
+    kills a non-atomic close whose gap is 1 ms in 232 of 400 trials. It
+    does NOT kill one whose gap is a bare mutex release and reacquire
+    -- 0 of 400, for two separate mutant shapes -- because CPython's
+    uncontended reacquire beats every waiter to the lock, even with
+    four threads hammering it and the switch interval at 1 us. No
+    pure-Python racer can resolve that window. The guard against it is
+    the module docstring's rule and the test below that enforces it by
+    parsing the source, not this one.
+    """
+
+    TRIALS = 400
+
+    def test_a_racing_emit_is_either_before_finished_or_refused(self):
+        rng = random.Random(20260830)
+        before = refused = 0
+        violations = []
+
+        for trial in range(self.TRIALS):
+            delivered = []
+            entered, release = threading.Event(), threading.Event()
+
+            def listener(event):
+                delivered.append(event["phase"])
+                if event["phase"] == "started":
+                    entered.set()
+                    release.wait(30)
+
+            stream = runner_module._EventStream(listener, f"race-{trial}")
+            stream.start()
+            stream.emit("started", action_id="t.race")
+            self.assertTrue(entered.wait(5), "the pump never started")
+            # A backlog, so an accepted racer really is delivered.
+            stream.emit("output", line="backlog")
+
+            barrier = threading.Barrier(2)
+            emit_jitter, close_jitter = rng.uniform(0, 4e-4), rng.uniform(0, 4e-4)
+
+            def emitter():
+                barrier.wait()
+                time.sleep(emit_jitter)
+                stream.emit("output", line="racer")
+
+            def closer():
+                barrier.wait()
+                time.sleep(close_jitter)
+                stream.close("finished", exit_code=0)
+
+            threads = [threading.Thread(target=emitter),
+                       threading.Thread(target=closer)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+            release.set()
+            stream.join(10)
+
+            self.assertIn("finished", delivered, f"trial {trial}: {delivered}")
+            tail = delivered[delivered.index("finished") + 1:]
+            if tail:
+                violations.append((trial, delivered))
+            elif delivered.count("output") == 2:
+                before += 1
+            else:
+                refused += 1
+
+        self.assertEqual(
+            len(violations), 0,
+            f"{len(violations)} of {self.TRIALS} trials delivered an event "
+            "after 'finished'; first offending sequence: "
+            f"{violations[0][1] if violations else None}")
+        self.assertGreater(
+            before, 0,
+            "no trial delivered the racing emit before 'finished' -- the "
+            "two calls are not actually racing, so this test proves nothing")
+        self.assertGreater(
+            refused, 0,
+            "no trial refused the racing emit -- the two calls are not "
+            "actually racing, so this test proves nothing")
+
+
+class TestTheModuleObeysItsOwnIORule(unittest.TestCase):
+    """The module docstring's property 3, enforced by parsing the source
+    instead of by asking a reader to notice:
+
+        No I/O of any kind -- including this module's own logging --
+        under `_cv` or `_OutputBuffer._lock`, and none between the audit
+        write and `self._lock.release()`.
+
+    Four rounds of fixes each reasoned their way to a correct answer for
+    the instance in front of them and missed the next one. The fourth
+    was this module's own `_log` under `_cv`, which no test and no
+    reviewer caught until it was measured. A grep is cheaper than a
+    fifth round of reasoning.
+    """
+
+    BANNED = {"_log", "_log_error", "print"}
+
+    def source(self):
+        path = Path(runner_module.__file__)
+        return ast.parse(path.read_text()), path
+
+    def banned_calls_in(self, node):
+        found = []
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            name = getattr(func, "id", None) or getattr(func, "attr", None)
+            if name in self.BANNED or name == "_on_event":
+                found.append((name, inner.lineno))
+        return found
+
+    def test_no_io_runs_under_either_mutex(self):
+        tree, path = self.source()
+        offences = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Anything named *_locked is called with a mutex already
+            # held (that is what the suffix is for), so its whole body
+            # counts as inside the block.
+            if node.name.endswith("_locked"):
+                offences += [(node.name, n, ln)
+                             for n, ln in self.banned_calls_in(node)]
+                continue
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.With):
+                    continue
+                held = {ast.unparse(item.context_expr) for item in inner.items}
+                if not held & {"self._cv", "self._lock", "self._cv.notify"}:
+                    continue
+                offences += [(node.name, n, ln)
+                             for n, ln in self.banned_calls_in(inner)]
+        self.assertEqual(
+            offences, [],
+            f"{path.name} performs I/O while holding a mutex its own "
+            f"threads contend on: {offences}. A write to a stalled "
+            "stderr never returns, so this hands the run lock to "
+            "whoever is reading that fd.")
+
+    def test_no_io_sits_between_the_audit_write_and_the_lock_release(self):
+        tree, path = self.source()
+        run = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "_run")
+        writes = [n.lineno for n in ast.walk(run) if isinstance(n, ast.Call)
+                  and ast.unparse(n.func).endswith("write_action_run")]
+        releases = [n.lineno for n in ast.walk(run) if isinstance(n, ast.Call)
+                    and ast.unparse(n.func) == "self._lock.release"]
+        self.assertEqual(len(writes), 1, "expected one audit write in _run")
+        self.assertEqual(len(releases), 1, "expected one lock release in _run")
+        trapped = [(name, line) for name, line in self.banned_calls_in(run)
+                   if writes[0] < line < releases[0]]
+        self.assertEqual(
+            trapped, [],
+            f"{path.name}:_run performs I/O between the audit write "
+            f"(line {writes[0]}) and the lock release (line "
+            f"{releases[0]}): {trapped}. Log it after the release.")

@@ -594,3 +594,131 @@ class TestTheKillReasonIsRecordedBeforeTheSignal(RunnerCase):
             "after the kill call returned, so the audit row lost it -- "
             "a trapped SIGTERM exit 0 now reads as an ordinary clean "
             "exit")
+
+
+
+class TestNoOutputEventArrivesAfterFinished(RunnerCase):
+    """The ordering guarantee the removed `event_order_lock` was added
+    for. It is a real requirement, not an artefact of that lock: a
+    listener told a run has finished must not then be handed more of
+    its output.
+
+    That lock enforced it by making the reader's "check the flag, then
+    call on_event" and the worker's "set the flag, then emit finished"
+    mutually exclusive -- which is also what put the caller's callback
+    on the worker's path to the run lock. The queue enforces it
+    instead: one thread delivers events FIFO, and closing the stream
+    appends "finished" and refuses every later event in the same atomic
+    step, so there is no check-then-act left to widen.
+
+    Reproduced the way the race actually happens. The direct child exits
+    at once, so the worker finalises READ_BOUND_SECONDS later while a
+    `setsid` escapee outside the process group is still streaming into
+    the pipe it inherited. The listener is deliberately slower than the
+    escapee, so there is still a backlog of undelivered events when
+    "finished" is queued -- without that, a late line simply arrives
+    after the delivery thread has already run dry, and the test passes
+    whether or not anything actually refuses it. (Confirmed by
+    mutation: with the post-close check removed from `_EventStream.emit`
+    this test fails; without the backlog it did not.)
+    """
+
+    def test_a_still_streaming_escapee_cannot_deliver_after_finished(self):
+        pid_file = Path(self.dir.name) / "streamer_pid"
+        streaming = Action(
+            "t.streamer",
+            ("/bin/sh", "-c",
+             "setsid sh -c 'i=0; while [ $i -lt 200 ]; do echo line$i; "
+             f"i=$((i+1)); sleep 0.03; done' & echo $! > {pid_file}; "
+             "exit 0"),
+            root=False, risk=Risk.SAFE)
+
+        def cleanup():
+            try:
+                os.killpg(int(pid_file.read_text().strip()), signal.SIGKILL)
+            except (FileNotFoundError, ValueError, ProcessLookupError,
+                    PermissionError):
+                pass
+
+        self.addCleanup(cleanup)
+
+        phases = []
+        lock = threading.Lock()
+
+        def listener(event):
+            with lock:
+                phases.append(event["phase"])
+            if event["phase"] == "output":
+                # Slower than the escapee produces, so undelivered
+                # events are still queued when the run finalises.
+                time.sleep(0.05)
+
+        runner = ActionRunner(self.store, timeout_seconds=1800)
+        runner.start(streaming, "127.0.0.1", listener)
+        runner.wait(30)
+        self.assertFalse(runner.is_busy())
+
+        with lock:
+            seen = list(phases)
+        self.assertIn(
+            "finished", seen,
+            "the finished event was never delivered within the bound")
+        self.assertEqual(
+            seen[-1], "finished",
+            f"{len(seen) - 1 - seen.index('finished')} event(s) reached "
+            "the listener after it had been told the run finished: "
+            f"{seen[seen.index('finished') + 1:]}")
+
+
+class TestTheEventStreamRefusesEventsAfterItCloses(unittest.TestCase):
+    """The same guarantee as the test above, taken down to the unit
+    that owns it and made deterministic rather than timed.
+
+    `close()` appends the final event and refuses every later one under
+    one mutex, so "an output event races finished" has exactly two
+    outcomes and no third: the emit got the mutex first, and the event
+    is queued ahead of "finished" and delivered before it; or it got
+    the mutex second, and it is refused. This exercises the second --
+    the only branch that can go wrong -- with the delivery thread
+    deliberately parked inside the caller's callback, so there is a
+    backlog for a wrongly-accepted event to be delivered behind.
+    """
+
+    def test_an_event_emitted_after_close_is_never_delivered(self):
+        delivered = []
+        entered = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def listener(event):
+            delivered.append(event["phase"])
+            if event["phase"] == "started":
+                entered.set()
+                release.wait(30)
+
+        stream = runner_module._EventStream(listener, "unit-run")
+        stream.start()
+
+        stream.emit("started", action_id="t.unit")
+        self.assertTrue(
+            entered.wait(5), "the delivery thread never called the listener")
+
+        # Queued while the listener is parked: this one is legitimate
+        # and must arrive, before "finished".
+        stream.emit("output", line="in time")
+        stream.close("finished", exit_code=0)
+        # Emitted after the stream closed -- a line a lingering reader
+        # thread only now produced. It must never reach the listener,
+        # and there is a backlog in front of it, so a wrongly-accepted
+        # event would genuinely be delivered rather than merely queued
+        # behind a delivery thread that has already run dry.
+        stream.emit("output", line="too late")
+
+        release.set()
+        stream.join(10)
+        self.assertFalse(
+            stream._thread.is_alive(), "the delivery thread did not finish")
+        self.assertEqual(
+            delivered, ["started", "output", "finished"],
+            "an event emitted after the stream closed reached the "
+            "listener after it had been told the run finished")

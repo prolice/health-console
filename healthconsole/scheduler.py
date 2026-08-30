@@ -4,16 +4,18 @@ The live view fills the in-memory ring; only an aggregated value reaches the
 database. The scheduler is also the only component that knows the clock, which
 is what keeps probes and rules purely functional.
 
-Single-writer policy: `Store` serialises every access to its shared SQLite
-connection on an internal `RLock` (see store.py's own comment for why —
-concurrent readers alone were enough to corrupt a cursor, with no second
-writer involved). That lock is what makes concurrent access safe; it is not
-what this policy is about. The policy is a simplicity choice layered on top:
-the `Scheduler` remains the ONLY component that calls `write_metrics`,
-`aggregate_5m` or `prune`, so the schema only ever has to reason about one
-writer, and a second write path can never race another on `metric_key.key
-UNIQUE` and raise IntegrityError. Do not read this as "reads need no
-locking" — they go through the same lock as every write.
+Single-writer policy: within one process, `Store` serialises every access to
+its shared SQLite connection on an internal `RLock` (see store.py's own
+comment for why — concurrent readers alone were enough to corrupt a cursor,
+with no second writer involved). That lock is what makes concurrent access
+from this process's own threads safe; it is not what this policy is about.
+The policy is a simplicity choice layered on top: the `Scheduler` remains the
+ONLY component in this process that calls `write_metrics`, `aggregate_5m` or
+`prune`. It cannot protect against a second OS process opening its own
+`Store` against the same database file — that process holds its own separate
+lock, so its writes could still race this one on `metric_key.key UNIQUE` and
+raise IntegrityError. Do not read this as "reads need no locking" — they go
+through the same lock as every write.
 """
 
 from __future__ import annotations
@@ -60,10 +62,13 @@ class Scheduler:
 
     The Scheduler is the only background writer to the Store: `write_metrics`,
     `aggregate_5m` and `prune` must never be called from anywhere else. This
-    is a design policy, not a safety requirement — `Store` locks every access,
-    writer or reader, so a second writer would not corrupt anything. It would
-    still be wrong: it could race this one on `metric_key.key UNIQUE` and
-    raise IntegrityError (see module docstring above).
+    is a design policy, not a safety requirement — within one process, `Store`
+    locks every access, writer or reader, on a single `RLock`, so a second
+    writer sharing this Store would not corrupt anything. What the policy
+    guards against is a second OS process opening its own `Store` against the
+    same database file: that process holds its own separate lock, so its
+    writes could still race this one on `metric_key.key UNIQUE` and raise
+    IntegrityError (see module docstring above).
     """
 
     def __init__(self, cfg: Config, store: Store, ring: Ring,

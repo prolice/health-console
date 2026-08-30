@@ -4,9 +4,9 @@ A local web console that reports the health of an Ubuntu machine through two
 deliberate readings: a **Simple mode** in plain language, understandable without a
 technical background, and an **Expert mode** that exposes everything.
 
-> **Project status: working console.** All 15 tasks of the implementation plan
-> are complete and reviewed. It runs today from a checkout — see
-> [Running it](#running-it) below.
+> **Project status: working console.** Simple and Expert modes, a redesigned
+> front end and a hardened collector and store all run today from a checkout
+> — see [Running it](#running-it) below.
 
 ## The idea
 
@@ -79,10 +79,9 @@ Then open `http://127.0.0.1:8787/`. `Ctrl+C` stops it.
 
 **By default it listens on every interface**, not only on loopback, and prints
 the LAN address alongside the local one when it can determine one. Nothing is
-exposed by that on its own:
-without a token in the configuration, every non-loopback request is refused with
-a `401`. Set `bind = "127.0.0.1"` if you want it not to listen beyond this
-machine at all.
+exposed by that on its own: without a token in the configuration, every
+non-loopback request is refused with a `401`. Set `bind = "127.0.0.1"` if you
+want it not to listen beyond this machine at all.
 
 Other commands:
 

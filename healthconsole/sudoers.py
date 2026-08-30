@@ -31,7 +31,11 @@ Both interpolated values are validated before a single line is built, and
   cleanly under sudo-rs and replaces the intended rule with unrestricted
   root. The comment character swallows the rest of the line; without it,
   a bare ``ALL`` still grants every account on the machine while looking,
-  at a glance, like a normal username.
+  at a glance, like a normal username. A name that is entirely uppercase
+  and starts with a letter -- `ADMINS`, say -- is also rejected: that is
+  the exact shape of a sudoers `User_Alias`, and a real account spelled
+  that way would bind to the alias instead of the account in the user
+  position of the rule.
 - Every element of every root action's `argv` is validated against an
   **allowlist**, not a denylist. `CATALOGUE` is trusted data today, but
   this module renders whatever it is given, and a denylist of "characters
@@ -42,10 +46,18 @@ Both interpolated values are validated before a single line is built, and
   the rule to a bare command name, which sudoers(5) documents as running
   "with any arguments they wish" -- root code execution through
   `apt-get`'s own option parsing -- and a Unicode zero-width space
-  (U+200B) is invisible but is not matched by `\\s`. Only the characters
-  the real catalogue's commands and arguments actually need are let
-  through, `argv[0]` must be an absolute path with no `..` segment, and
-  no element may be empty.
+  (U+200B) is invisible but is not matched by `\\s`. `argv[0]` must
+  match one positive path shape -- one or more `/segment` groups, nothing
+  before the first `/` and nothing after the last segment -- rather than
+  a `startswith("/")` check plus a growing list of prohibitions: that
+  shape alone rejects a bare `/`, a trailing `/` (sudoers-rs(5) treats a
+  path ending in `/` as a *directory* spec, granting every file inside
+  it -- reproduced end-to-end through `cmd_sudoers` with `visudo -c`
+  reporting `parsed OK`), and it is checked alongside an explicit
+  rejection of `.` or `..` as a whole path segment, applied to every
+  argument, not only `argv[0]` -- `/usr/bin/./sh` and a later argument of
+  `../etc/shadow` both still parsed clean without it. No element may be
+  empty.
 """
 
 from __future__ import annotations
@@ -77,6 +89,20 @@ HEADER = """\
 # rather than trusted to fall out of the character class.
 _USER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,31}")
 
+# The shape of a sudoers User_Alias name: uppercase letters, digits and
+# underscore, starting with an uppercase letter. A real account spelled
+# this way -- ADMINS, say -- would bind to an alias of the same name
+# instead of the account in the user position of the rule.
+_ALIAS_LIKE_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+# argv[0]'s shape: an absolute path built of one or more "/segment"
+# groups, nothing before the first "/" and nothing left over after the
+# last segment. This is a positive shape, not "starts with / plus a
+# growing list of prohibitions" -- that approach missed a trailing "/"
+# (sudoers-rs(5): a path ending in "/" is a *directory* spec, granting
+# every file inside it) and a bare "/" (every file on the filesystem).
+_ARGV0_PATH_RE = re.compile(r"(?:/[A-Za-z0-9._-]+)+")
+
 # What an argv element is allowed to contain -- an allowlist, not a
 # denylist. sudo-rs's sudoers grammar reads far more as syntax than any
 # enumerated denylist catches: `#` opens a comment (mid-token, not just at
@@ -93,24 +119,35 @@ def _validate_user(user: str) -> None:
         raise ValueError(
             f"refusing to render a sudoers rule for {user!r}: not a plain "
             "POSIX login name")
+    if _ALIAS_LIKE_RE.fullmatch(user):
+        raise ValueError(
+            f"refusing to render a sudoers rule for {user!r}: this is the "
+            "shape of a sudoers User_Alias name and could bind to an "
+            "alias instead of the account")
 
 
 def _validate_argv(argv: tuple[str, ...]) -> None:
     if not argv:
         raise ValueError("refusing to render a sudoers rule: empty argv")
-    if not argv[0].startswith("/"):
+    if not _ARGV0_PATH_RE.fullmatch(argv[0]):
         raise ValueError(
             f"refusing to render a sudoers rule: argv[0] must be an "
-            f"absolute path, got {argv!r}")
-    if ".." in argv[0].split("/"):
-        raise ValueError(
-            f"refusing to render a sudoers rule: argv[0] must not contain "
-            f"a '..' path segment, got {argv!r}")
+            f"absolute file path -- no bare '/', no trailing '/' -- "
+            f"got {argv!r}")
     for part in argv:
         if part == "" or not _ARGV_SAFE_RE.fullmatch(part):
             raise ValueError(
                 f"refusing to render a sudoers rule: unsafe argument "
                 f"{part!r} in {argv!r}")
+        # '.' and '..' are within the allowed character set (a real
+        # filename can contain either), so they are rejected as whole
+        # path segments here rather than as characters, and for every
+        # element -- not only argv[0] -- since a later argument
+        # containing '/' is still a path as far as sudo-rs cares.
+        if any(segment in (".", "..") for segment in part.split("/")):
+            raise ValueError(
+                f"refusing to render a sudoers rule: '.' or '..' path "
+                f"segment in {part!r} within {argv!r}")
 
 
 def render(user: str) -> str:

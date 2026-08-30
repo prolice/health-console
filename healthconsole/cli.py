@@ -260,6 +260,15 @@ def cmd_sudoers(cfg, config_path, rotate) -> int:
             print((result.stdout + result.stderr).strip(), file=sys.stderr)
             return 1
         SUDOERS_DEST.parent.mkdir(parents=True, exist_ok=True)
+        # mkdir(mode=...) is masked by umask and is a no-op when the
+        # directory already exists either way, so the directory's mode
+        # has to be set with an explicit chmod: replacing a file only
+        # needs write permission on its *parent directory*, not the file
+        # itself, so an 0775/0777 packaging/sudoers.d/ would still let
+        # another local user unlink-and-replace this file between
+        # "rendered" and "operator runs the printed sudo install line",
+        # even with the file itself locked down below.
+        SUDOERS_DEST.parent.chmod(0o700)
         # shutil.copyfile() copies only the bytes, not the mode: the
         # NamedTemporaryFile above is created 0600, but without this the
         # destination would land however the process umask says (0664

@@ -30,11 +30,12 @@ bare command name, which sudoers(5) documents as letting the user run it
 
 import io
 import os
+import pwd
 import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -131,6 +132,15 @@ class TestRenderRejectsUnsafeUsers(unittest.TestCase):
         # special to sudoers.
         self.assertIn("Prolice ALL=(root) NOPASSWD:", render("Prolice"))
 
+    def test_a_user_alias_shaped_name_is_rejected(self):
+        # sudoers-rs(5): a User_Alias is uppercase letters, digits and
+        # underscore, starting with an uppercase letter. A real account
+        # spelled that way -- ADMINS, say -- would bind to an alias of
+        # the same name in the user position of the rule instead of the
+        # account.
+        with self.assertRaises(ValueError):
+            render("ADMINS")
+
 
 class TestRenderRejectsUnsafeArgv(unittest.TestCase):
     """`CATALOGUE` is trusted, auditable data today -- one frozen entry --
@@ -177,6 +187,38 @@ class TestRenderRejectsUnsafeArgv(unittest.TestCase):
         # path that does not name the file it appears to.
         with self.assertRaises(ValueError):
             self._render_with(("/usr/bin/../bin/sh",))
+
+    def test_a_dot_dot_segment_in_a_later_argument_is_rejected(self):
+        # The '..' check must not be scoped to argv[0] alone: any element
+        # containing '/' is still a path as far as sudo-rs is concerned.
+        with self.assertRaises(ValueError):
+            self._render_with(("/usr/bin/apt-get", "../etc/shadow"))
+
+    def test_a_trailing_slash_making_argv0_a_directory_spec_is_rejected(self):
+        # sudoers-rs(5): "A directory is a fully qualified path name
+        # ending in a '/'. When you specify a directory ... the user will
+        # be able to run any file within that directory." Reproduced
+        # end-to-end through cmd_sudoers: visudo -c reports "parsed OK"
+        # for exactly this rule.
+        with self.assertRaises(ValueError):
+            self._render_with(("/usr/bin/",))
+
+    def test_a_trailing_slash_on_a_nested_path_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._render_with(("/usr/bin/apt-get/",))
+
+    def test_the_bare_root_directory_is_rejected(self):
+        # The directory-spec case taken to its limit: every file on the
+        # filesystem.
+        with self.assertRaises(ValueError):
+            self._render_with(("/",))
+
+    def test_a_dot_segment_in_the_middle_of_argv0_is_rejected(self):
+        # '.' is inside the allowed character set (a real filename can
+        # contain one), so this has to be rejected as a whole path
+        # segment, not as a character.
+        with self.assertRaises(ValueError):
+            self._render_with(("/usr/bin/./sh",))
 
     def test_a_trailing_hash_truncating_the_rule_is_rejected(self):
         # '#' opens a comment in sudo-rs 0.2.13 -- confirmed against this
@@ -226,21 +268,49 @@ class TestCmdSudoers(unittest.TestCase):
         self.assertNotIn("--install", help_output)
 
     def test_it_does_not_resolve_the_user_from_the_environment(self):
-        # A wrong implementation such as
-        # `os.environ.get("LOGNAME") or pwd.getpwuid(...)` would pass a
-        # test that only mocks getpass.getuser() and never sets a hostile
-        # environment -- this one plants the payload in $LOGNAME/$USER
-        # themselves and checks it never reaches the output.
-        hostile = "prolice ALL=(ALL) NOPASSWD: ALL #"
+        # A previous version of this test planted an *invalid* login
+        # name (one _validate_user rejects) and asserted it was absent
+        # from stdout -- but the refusal message lands on stderr, which
+        # this test never captured, so the assertion held whether or not
+        # the environment was actually consulted: it passed unchanged
+        # against `user = os.environ.get("LOGNAME") or
+        # pwd.getpwuid(uid).pw_name`. A *valid-looking* name sails
+        # straight through that mutant with exit 0, so this plants one
+        # and asserts, positively, that the rendered rule names the real
+        # password-database account instead.
+        real_user = pwd.getpwuid(os.getuid()).pw_name
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "packaging" / "sudoers.d" / "health-console"
             with mock.patch.dict(
-                    os.environ, {"LOGNAME": hostile, "USER": hostile,
-                                 "SUDO_USER": hostile}), \
+                    os.environ, {"LOGNAME": "attacker", "USER": "attacker",
+                                 "SUDO_USER": "attacker"}), \
                  mock.patch("healthconsole.cli.SUDOERS_DEST", dest):
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = main(["sudoers"])
+                output = out.getvalue() + err.getvalue()
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"{real_user} ALL=(root) NOPASSWD:", output)
+        self.assertNotIn("attacker ALL=(root)", output)
+
+    def test_root_is_still_refused_with_sudo_uid_set_to_a_real_user(self):
+        # Pins the promise in cmd_sudoers's docstring: recovering the
+        # invoking user from $SUDO_UID would put the environment back in
+        # the loop the previous fix closed. A mutant such as
+        # `uid = int(os.environ.get("SUDO_UID") or os.getuid())` would
+        # pass every other test in this file (uid 0 is only reached by
+        # mocking os.getuid directly) while defeating the root refusal
+        # exactly when it matters -- under a real `sudo` invocation,
+        # where $SUDO_UID is set.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "packaging" / "sudoers.d" / "health-console"
+            with mock.patch.dict(os.environ, {"SUDO_UID": "1000"}), \
+                 mock.patch("healthconsole.cli.SUDOERS_DEST", dest), \
+                 mock.patch("healthconsole.cli.os.getuid", return_value=0):
                 code, output = self.run_cli("sudoers")
-        self.assertNotIn(hostile, output)
-        self.assertNotIn("ALL=(ALL) NOPASSWD: ALL #", output)
+            self.assertNotEqual(code, 0)
+            self.assertNotIn("sudo install", output)
+            self.assertFalse(dest.exists())
 
     @unittest.skipUnless(VISUDO, "visudo is not installed")
     def test_it_creates_the_packaging_directory_if_absent(self):
@@ -283,6 +353,28 @@ class TestCmdSudoers(unittest.TestCase):
             self.assertEqual(code, 0)
             mode = dest.stat().st_mode & 0o777
             self.assertEqual(mode, 0o600)
+
+    @unittest.skipUnless(VISUDO, "visudo is not installed")
+    def test_the_packaging_directory_is_not_group_or_world_writable(self):
+        # Replacing a file only needs write permission on its *parent
+        # directory*, not the file itself: mkdir(parents=True) takes no
+        # mode and is a no-op when the directory already exists, so
+        # without an explicit chmod packaging/sudoers.d/ lands however
+        # the umask says (0775 under 002, 0777 under 000) -- letting
+        # another local user unlink-and-replace the file the printed
+        # 'sudo install' line reads from, even with the file itself
+        # locked down to 0600.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "packaging" / "sudoers.d" / "health-console"
+            old_umask = os.umask(0o002)
+            try:
+                with mock.patch("healthconsole.cli.SUDOERS_DEST", dest):
+                    code, _ = self.run_cli("sudoers")
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(code, 0)
+            mode = dest.parent.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o700)
 
     @unittest.skipUnless(VISUDO, "visudo is not installed")
     def test_the_temporary_file_does_not_survive_a_successful_run(self):

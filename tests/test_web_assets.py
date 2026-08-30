@@ -251,6 +251,21 @@ class TestSimpleModule(unittest.TestCase):
         self.assertIn("raw-detail", self.js)
 
 
+class TestRangeAgreement(unittest.TestCase):
+    """The front end and the server must agree on the window identifiers."""
+
+    def test_front_end_ranges_match_the_server(self):
+        from healthconsole.server import RANGES as SERVER_RANGES
+        source = js("history.js")
+        declared = re.search(r"export const RANGES = \[([^\]]*)\]", source)
+        self.assertIsNotNone(declared, "history.js declares no RANGES")
+        front = set(re.findall(r'"([^"]+)"', declared.group(1)))
+        self.assertEqual(
+            front, set(SERVER_RANGES),
+            "history.js and server.py disagree on the window identifiers; "
+            "a mismatch yields a 400 the user sees as an empty chart")
+
+
 class TestAppModule(unittest.TestCase):
     def setUp(self):
         self.js = js("app.js")

@@ -96,7 +96,7 @@ function riskBadge(risk) {
   return badge;
 }
 
-function openConfirm(actionId) {
+export function openActionConfirmation(actionId) {
   pendingActionId = actionId;
   el("action-confirm-body").textContent = translate(`action.${actionId}.confirm`);
   // The modal itself opens via the Run button's data-bs-toggle/data-bs-target
@@ -125,7 +125,7 @@ function actionRow(action, running) {
   button.disabled = isRunDisabled(action, running);
   button.dataset.bsToggle = "modal";
   button.dataset.bsTarget = "#action-confirm-modal";
-  button.addEventListener("click", () => openConfirm(action.id));
+  button.addEventListener("click", () => openActionConfirmation(action.id));
 
   row.append(text, button);
   return row;

@@ -28,7 +28,7 @@ from healthconsole import rules
 from healthconsole.config import Config
 from healthconsole.findings import Severity
 from healthconsole.probes import (
-    FAST, EvalContext, describe_exception, load_probes, unavailable,
+    FAST, SLOW, EvalContext, describe_exception, load_probes, unavailable,
 )
 from healthconsole.probes import network as network_probe
 from healthconsole.ring import Ring
@@ -77,9 +77,18 @@ class Scheduler:
         self.store = store
         self.ring = ring
         self.clock = clock
-        self.probes = load_probes(FAST) if probes is None else probes
+        if probes is None:
+            self.fast_probes = load_probes(FAST)
+            self.slow_probes = load_probes(SLOW)
+            self.probes = [*self.fast_probes, *self.slow_probes]
+        else:
+            self.fast_probes = probes
+            self.slow_probes = []
+            self.probes = probes
         self.tracker = HysteresisTracker()
         self._last_flush: float | None = None
+        self._last_slow: float | None = None
+        self._slow_samples: dict[str, dict] = {}
         self._net_previous: dict = {}
         self._net_previous_ts: float | None = None
         self._state: dict = dict(EMPTY_STATE)
@@ -99,7 +108,7 @@ class Scheduler:
         samples: dict[str, dict] = {}
         measurements: dict[str, float] = {}
 
-        for probe in self.probes:
+        for probe in self.fast_probes:
             try:
                 sample = probe.collect()
                 samples[probe.NAME] = sample
@@ -108,6 +117,18 @@ class Scheduler:
                 # A failing probe never brings the others down.
                 samples[probe.NAME] = unavailable(
                     f"probe failed: {describe_exception(exc)}")
+
+        if self._last_slow is None or now - self._last_slow >= 300:
+            self._last_slow = now
+            for probe in self.slow_probes:
+                try:
+                    sample = probe.collect()
+                    self._slow_samples[probe.NAME] = sample
+                    measurements.update(probe.metrics(sample))
+                except Exception as exc:          # noqa: BLE001
+                    self._slow_samples[probe.NAME] = unavailable(
+                        f"probe failed: {describe_exception(exc)}")
+        samples.update(self._slow_samples)
 
         measurements.update(self._network_rates(samples, now))
         for key, value in measurements.items():
@@ -161,6 +182,7 @@ class Scheduler:
                                         dt=now - self._net_previous_ts)
         self._net_previous = current
         self._net_previous_ts = now
+        sample["rates"] = rates
         return rates
 
     @staticmethod

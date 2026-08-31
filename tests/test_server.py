@@ -328,9 +328,17 @@ class ServerCase(unittest.TestCase):
 class TestActionReadRoutes(ServerCase):
     def test_the_catalogue_lists_every_action_with_its_risk(self):
         body = self.get_json("/api/actions")
-        self.assertEqual([entry["id"] for entry in body], ["apt.refresh"])
-        self.assertEqual(body[0]["risk"], "safe")
-        self.assertTrue(body[0]["available"])
+        by_id = {entry["id"]: entry for entry in body}
+        self.assertEqual(set(by_id), {
+            "apt.refresh", "apt.upgrade", "apt.security", "clean.aptcache",
+        })
+        self.assertEqual(by_id["apt.refresh"]["risk"], "safe")
+        self.assertTrue(by_id["apt.refresh"]["available"])
+
+    def test_export_returns_a_standalone_html_report(self):
+        raw = self.get_raw("/api/export")
+        self.assertIn("<!doctype html>", raw)
+        self.assertIn("Health Console report", raw)
 
     def test_the_catalogue_carries_no_prose(self):
         # The API is locale-neutral: ids and risk levels only, so one

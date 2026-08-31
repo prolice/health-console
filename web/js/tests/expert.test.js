@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { chartCards, isDepthShort, depthMessage, renderProbeTable, renderTiles,
-         thermalZoneSignature, seriesStyleTokens, TILES } from "../expert.js";
+         networkMetrics, thermalZoneSignature, seriesStyleTokens, TILES } from "../expert.js";
 
 // A minimal stand-in for the DOM, just enough for renderProbeTable() (the
 // only exported function here that touches document.createElement /
@@ -68,6 +68,62 @@ test("chartCards falls back to cpu.temp.pkg alone when thermal itself is unavail
   const noState = chartCards(undefined)
     .find(([titleKey]) => titleKey === "ui.chart.group.thermal");
   assert.deepEqual(noState[1], ["cpu.temp.pkg"]);
+});
+
+test("networkMetrics chooses an active non-loopback interface with traffic", () => {
+  const state = {
+    probes: {
+      network: {
+        status: "ok",
+        counters: {
+          lo: { rx: 1_000_000, tx: 1_000_000 },
+          wlo1: { rx: 10, tx: 5 },
+          enp0s25: { rx: 2000, tx: 1000 },
+        },
+        addresses: {
+          lo: ["127.0.0.1"],
+          wlo1: [],
+          enp0s25: ["192.168.0.3"],
+        },
+        up: { lo: true, wlo1: false, enp0s25: true },
+      },
+    },
+  };
+  assert.deepEqual(networkMetrics(state), ["net.enp0s25.rx_bps", "net.enp0s25.tx_bps"]);
+});
+
+test("networkMetrics names receive and send history for the primary interface", () => {
+  const state = {
+    probes: {
+      network: {
+        status: "ok",
+        counters: { enp0s25: { rx: 2000, tx: 1000 } },
+        addresses: { enp0s25: ["192.168.0.3"] },
+        up: { enp0s25: true },
+      },
+    },
+  };
+  assert.deepEqual(networkMetrics(state), ["net.enp0s25.rx_bps", "net.enp0s25.tx_bps"]);
+});
+
+test("chartCards includes a network card only when a usable interface exists", () => {
+  const withNetwork = {
+    probes: {
+      network: {
+        status: "ok",
+        counters: { enp0s25: { rx: 2000, tx: 1000 } },
+        addresses: { enp0s25: ["192.168.0.3"] },
+        up: { enp0s25: true },
+      },
+    },
+  };
+  const card = chartCards(withNetwork)
+    .find(([titleKey]) => titleKey === "ui.chart.group.network");
+  assert.deepEqual(card[1], ["net.enp0s25.rx_bps", "net.enp0s25.tx_bps"]);
+
+  const noCard = chartCards({ probes: { network: { status: "unavailable" } } })
+    .find(([titleKey]) => titleKey === "ui.chart.group.network");
+  assert.equal(noCard, undefined);
 });
 
 test("isDepthShort flags a window shorter than what was requested", () => {

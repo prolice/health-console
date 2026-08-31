@@ -56,6 +56,15 @@ export const TILES = [
   ["load.1",
     (p) => (p.cpu?.status === "ok" ? p.cpu.load1 : null),
     (v) => formatNumber(v)],
+  ["disk.root.used_pct",
+    (p) => (p.storage?.status === "ok" ? p.storage.used_pct : null),
+    (v) => `${formatNumber(v)} %`],
+  ["disk.root.free",
+    (p) => (p.storage?.status === "ok" ? p.storage.free : null),
+    (v) => formatBytes(v)],
+  ["updates.pending",
+    (p) => (p.updates?.status === "ok" ? p.updates.pending_count : null),
+    (v) => formatNumber(v)],
 ];
 
 // Requested window length in days, keyed the same as history.js's RANGES.
@@ -97,25 +106,32 @@ export function chartCards(state) {
   const zones = thermalZones(state);
   const thermalMetrics = ["cpu.temp.pkg",
     ...Object.keys(zones).map((zone) => `thermal.${zone}`)];
-  return [
+  const cards = [
     ["ui.chart.group.cpu", ["cpu.usage", "load.1"]],
     ["ui.chart.group.thermal", thermalMetrics],
     ["ui.chart.group.memory", ["mem.available_pct", "mem.swap.used"]],
+    ["ui.chart.group.network", networkMetrics(state)],
     ["ui.chart.group.battery", ["battery.charge_pct", "battery.wear_pct"]],
+    ["ui.chart.group.storage", ["disk.root.used_pct", "disk.root.free", "disk.apt_cache"]],
+    ["ui.chart.group.updates", ["updates.pending", "updates.security"]],
   ];
+  return cards.filter(([, metrics]) => metrics.length > 0);
 }
 
-// A cheap fingerprint of which zones the thermal card would draw for a
-// given state -- sorted so the fingerprint depends only on the set, not on
-// object key order. Compared, on every renderExpert() tick, against the
-// zone set the chart grid was actually last drawn from (see
-// lastDrawnZoneSignature below): if `/api/now` fails on load, the thermal
-// card falls back to cpu.temp.pkg alone with no way to tell that apart
-// from a machine that genuinely has no zones, and nothing would otherwise
-// ever redraw it once the real zones become known from the first SSE
-// state.
 export function thermalZoneSignature(state) {
   return Object.keys(thermalZones(state)).sort().join(",");
+}
+
+export function networkMetrics(state) {
+  const net = state?.probes?.network;
+  if (!net || net.status !== "ok") return [];
+  const counters = net.counters || {};
+  const score = (name) => (counters[name]?.rx || 0) + (counters[name]?.tx || 0);
+  const iface = Object.keys(counters)
+    .filter((name) => net.up?.[name]
+      && !(net.addresses?.[name] || []).some((addr) => addr.startsWith("127.")))
+    .sort((left, right) => score(right) - score(left) || left.localeCompare(right))[0];
+  return iface ? [`net.${iface}.rx_bps`, `net.${iface}.tx_bps`] : [];
 }
 
 // Colour is the only channel separating series within one chart, so it must

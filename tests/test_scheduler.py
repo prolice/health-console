@@ -34,6 +34,29 @@ class FakeProbe:
         return []
 
 
+class FakeNetworkProbe:
+    NAME = "network"
+    CADENCE = FAST
+
+    def __init__(self):
+        self.rx = 1000
+        self.tx = 500
+
+    def collect(self):
+        return {
+            "status": "ok",
+            "counters": {"enp0s25": {"rx": self.rx, "tx": self.tx}},
+            "addresses": {"enp0s25": ["192.168.0.3"]},
+            "up": {"enp0s25": True},
+        }
+
+    def metrics(self, sample):
+        return {}
+
+    def evaluate(self, sample, ctx):
+        return []
+
+
 class SchedulerCase(unittest.TestCase):
     def setUp(self):
         self.store = Store(":memory:")
@@ -109,6 +132,19 @@ class TestTick(SchedulerCase):
         state = scheduler.tick(now=1000.0)
         self.assertEqual(state["probes"]["memory"]["status"], "unavailable")
         self.assertIn("RuntimeError", state["probes"]["memory"]["reason"])
+
+    def test_network_rates_are_in_the_ring_and_current_state(self):
+        network = FakeNetworkProbe()
+        scheduler = Scheduler(Config(), self.store, self.ring,
+                              probes=[network])
+        scheduler.tick(now=1000.0)
+        network.rx = 3000
+        network.tx = 1500
+        state = scheduler.tick(now=1002.0)
+        self.assertEqual(
+            state["probes"]["network"]["rates"]["net.enp0s25.rx_bps"],
+            1000.0)
+        self.assertEqual(len(self.ring.series("net.enp0s25.tx_bps")), 1)
 
 
 class TestSustained(SchedulerCase):

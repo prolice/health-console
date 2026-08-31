@@ -8,6 +8,7 @@ belong to plan 3.
 from __future__ import annotations
 
 import hmac
+import html
 import ipaddress
 import json
 import secrets
@@ -92,6 +93,72 @@ ACTION_EVENT_QUEUE_MAX = 200
 # keeps a usable connection. Past this, the connection is dropped instead
 # of reading megabytes into memory only to discard them.
 MAX_DRAINABLE_BODY = 65_536
+
+
+def action_availability(action_id: str, state: dict) -> tuple[bool, str]:
+    probes = state.get("probes") or {}
+    if action_id == "apt.refresh":
+        return True, ""
+    if action_id == "apt.upgrade":
+        updates = probes.get("updates") or {}
+        return (updates.get("status") == "ok"
+                and updates.get("pending_count", 0) > 0,
+                "no_pending_updates")
+    if action_id == "apt.security":
+        updates = probes.get("updates") or {}
+        return (updates.get("status") == "ok"
+                and updates.get("security_count", 0) > 0,
+                "no_security_updates")
+    if action_id == "clean.aptcache":
+        storage = probes.get("storage") or {}
+        return (storage.get("status") == "ok"
+                and storage.get("apt_cache_bytes", 0) > 0,
+                "empty_apt_cache")
+    return True, ""
+
+
+def export_html(state: dict) -> bytes:
+    title = "Health Console report"
+    generated = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime())
+    rows = []
+    for finding in state.get("findings") or []:
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(finding.get('severity', '')))}</td>"
+            f"<td>{html.escape(str(finding.get('id', '')))}</td>"
+            f"<td>{html.escape(json.dumps(finding.get('params', {}), sort_keys=True))}</td>"
+            f"<td>{html.escape(str(finding.get('detail', '')))}</td>"
+            "</tr>")
+    if not rows:
+        rows.append("<tr><td colspan=\"4\">No findings.</td></tr>")
+    probes = html.escape(json.dumps(state.get("probes") or {},
+                                    indent=2, sort_keys=True))
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{title}</title>
+  <style>
+    body {{ font: 14px system-ui, sans-serif; margin: 2rem; color: #1f2933; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1rem 0; }}
+    th, td {{ border: 1px solid #cbd5e1; padding: .5rem; text-align: left; }}
+    pre {{ background: #f8fafc; border: 1px solid #cbd5e1; padding: 1rem; overflow: auto; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  <p>Generated {html.escape(generated)}. Score: {html.escape(str(state.get("score")))}. Severity: {html.escape(str(state.get("severity")))}.</p>
+  <h2>Findings</h2>
+  <table>
+    <thead><tr><th>Severity</th><th>Finding</th><th>Parameters</th><th>Detail</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+  <h2>Raw probes</h2>
+  <pre>{probes}</pre>
+</body>
+</html>
+"""
+    return body.encode("utf-8")
 
 
 def is_loopback(addr: str) -> bool:
@@ -467,20 +534,23 @@ def make_server(cfg: Config, scheduler, web_dir: Path = WEB_DIR, *,
                 return self._json(200, scheduler.state(), extra)
             if parsed.path == "/api/history":
                 return self._history(query, extra)
+            if parsed.path == "/api/export":
+                return self._send(200, export_html(scheduler.state()),
+                                  "text/html; charset=utf-8", extra)
             if parsed.path == "/api/stream":
                 return self._stream(extra)
             if parsed.path == "/api/actions":
                 # Locale-neutral: ids and risk levels only, never prose --
                 # the browser localises from its own catalogue, so one
                 # response serves every language.
-                return self._json(200, [
-                    # `available` is always true in B1: every gate that
-                    # could make it false reads probe data that does not
-                    # exist yet. It ships anyway so the front end honours
-                    # it from the start rather than being retrofitted.
-                    {"id": action.id, "risk": action.risk.value,
-                     "available": True}
-                    for action in catalogue.values()], extra)
+                rows = []
+                state = scheduler.state()
+                for action in catalogue.values():
+                    available, reason = action_availability(action.id, state)
+                    rows.append({"id": action.id, "risk": action.risk.value,
+                                 "available": available,
+                                 "unavailable_reason": "" if available else reason})
+                return self._json(200, rows, extra)
             if parsed.path == "/api/actions/runs":
                 return self._action_runs(extra)
             return self._error(404, "unknown_route", parsed.path, extra)
@@ -608,6 +678,9 @@ def make_server(cfg: Config, scheduler, web_dir: Path = WEB_DIR, *,
             action = catalogue.get(parsed.path[len(prefix):])
             if action is None:
                 return self._error(404, "unknown_action", "", extra)
+            available, reason = action_availability(action.id, scheduler.state())
+            if not available:
+                return self._error(409, "action_unavailable", reason, extra)
 
             # Guarded here as well as in _history and _action_runs, and it
             # matters more here than in either: server_close() does not

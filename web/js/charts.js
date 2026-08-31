@@ -54,6 +54,10 @@ function animationsAllowed() {
 // catalogue bugs.
 export function metricLabel(metricKey) {
   if (metricKey.startsWith("thermal.")) return metricKey;
+  const network = /^net\.(.+)\.(rx|tx)_bps$/.exec(metricKey);
+  if (network) {
+    return translate(`ui.metric.net.${network[2]}_bps`, { iface: network[1] });
+  }
   return translate(`ui.metric.${metricKey}`) || metricKey;
 }
 
@@ -73,11 +77,13 @@ const METRIC_UNITS = {
 
 export function metricUnit(metricKey) {
   if (metricKey.startsWith("thermal.")) return "celsius";
+  if (metricKey.startsWith("net.") && metricKey.endsWith("_bps")) return "bps";
   return METRIC_UNITS[metricKey] || "";
 }
 
 function formatByUnit(value, unit) {
   if (unit === "bytes") return formatBytes(value);
+  if (unit === "bps") return `${formatBytes(value)}/s`;
   if (unit === "pct") return `${formatNumber(value)} %`;
   if (unit === "celsius") return `${formatNumber(value)} °C`;
   return formatNumber(value);

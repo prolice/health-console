@@ -57,7 +57,8 @@ build step, no CDN** — a diagnostic tool must work without Internet access, an
 survive distribution upgrades.
 
 The collector runs at two cadences: 2 seconds for what is cheap to read
-(`/proc`, `/sys`), 5 minutes for what is expensive (SMART, APT, systemd). The
+(`/proc`, `/sys`, filesystem capacity), 5 minutes for what is expensive (APT,
+later SMART and systemd). The
 HTTP server streams state over SSE. The front end is HTML, CSS and native ES
 modules, built on Bootstrap and Chart.js — both **vendored and served from
 disk**, never fetched from a CDN, so the console works with no network at all.
@@ -93,6 +94,13 @@ Other commands:
 ./bin/health-console token --rotate  # generate one and store it in config.toml
 ./bin/health-console sudoers         # render the sudoers rule and print it; does not install
 ```
+
+The browser also exposes an Actions tab. Actions are shown from a closed
+catalogue and become runnable only when the latest measurements justify them:
+package refresh is always available, package upgrades require pending updates,
+security upgrades require pending security fixes, and cache cleanup requires a
+non-empty APT package cache. A standalone HTML diagnostic report is available at
+`/api/export`.
 
 Configuration lives at `~/.config/health-console/config.toml` (created on
 first use of a command that needs one; absent otherwise, in which case every
@@ -145,6 +153,12 @@ deploying it anywhere else.
   connection tracking).
 - **It is not designed to face the Internet.** Do not put it there.
 - Every action is logged with its timestamp, source, exit code and full output.
+
+## Packaging status
+
+`packaging/` contains starter systemd, sysusers and tmpfiles units for running
+the service as a dedicated `health-console` account. They are packaging inputs,
+not an installer: the project still never writes to `/etc` by itself.
 
 ## Target
 

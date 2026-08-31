@@ -37,6 +37,9 @@ FINDING_PARAMS: dict[str, frozenset[str]] = {
     "thermal.critical": frozenset({"temperature_c"}),
     "battery.wear": frozenset({"wear_pct"}),
     "battery.incoherent": frozenset(),
+    "storage.root_full": frozenset({"used_pct", "free_bytes"}),
+    "updates.pending": frozenset({"count"}),
+    "updates.security_pending": frozenset({"count"}),
 }
 
 FINDING_IDS: frozenset[str] = frozenset(FINDING_PARAMS)

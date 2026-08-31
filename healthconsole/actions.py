@@ -42,6 +42,24 @@ CATALOGUE: dict[str, Action] = {
         root=True,
         risk=Risk.SAFE,
     ),
+    "apt.upgrade": Action(
+        id="apt.upgrade",
+        argv=("/usr/bin/apt-get", "-y", "upgrade"),
+        root=True,
+        risk=Risk.MEDIUM,
+    ),
+    "apt.security": Action(
+        id="apt.security",
+        argv=("/usr/bin/unattended-upgrade",),
+        root=True,
+        risk=Risk.MEDIUM,
+    ),
+    "clean.aptcache": Action(
+        id="clean.aptcache",
+        argv=("/usr/bin/apt-get", "clean"),
+        root=True,
+        risk=Risk.SAFE,
+    ),
 }
 
 ACTION_IDS: frozenset[str] = frozenset(CATALOGUE)

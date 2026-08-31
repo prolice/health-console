@@ -604,6 +604,9 @@ class TestMetricKeysExist(unittest.TestCase):
         "cpu.usage", "cpu.freq", "load.1", "cpu.temp.pkg",
         "mem.available", "mem.available_pct", "mem.swap.used",
         "battery.charge_pct", "battery.wear_pct",
+        "disk.root.used_pct", "disk.root.free", "disk.apt_cache",
+        "updates.pending", "updates.security",
+        "net.enp0s25.rx_bps", "net.enp0s25.tx_bps",
     }
 
     def test_every_referenced_metric_key_is_one_a_probe_emits(self):
@@ -616,7 +619,8 @@ class TestMetricKeysExist(unittest.TestCase):
         # as a ternary's alternate, "cond ? a : "cpu.usage"") would be
         # skipped too. Nothing in this codebase writes a metric key that
         # way today, but the next reader should not have to rediscover it.
-        used = set(re.findall(r'"((?:cpu|mem|load|battery)\.[a-z0-9_.]+)"(?!\s*:)',
+        source = source.replace("${iface}", "enp0s25")
+        used = set(re.findall(r'"((?:cpu|mem|load|battery|disk|updates|net)\.[a-z0-9_.]+)"(?!\s*:)',
                               source))
         unknown = used - self.KNOWN
         self.assertEqual(unknown, set(),

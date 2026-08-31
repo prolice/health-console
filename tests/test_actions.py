@@ -35,12 +35,10 @@ class TestCatalogueIsData(unittest.TestCase):
         for key, action in CATALOGUE.items():
             self.assertEqual(key, action.id)
 
-    def test_b1_ships_exactly_one_action(self):
-        # B1 is deliberately a thin slice: eleven of the design document's
-        # thirteen actions have no inputs until their probes exist. If this
-        # fails, either a probe landed and the spec needs updating, or an
-        # action was added without one.
-        self.assertEqual(set(CATALOGUE), {"apt.refresh"})
+    def test_current_catalogue_is_the_supported_safe_subset(self):
+        self.assertEqual(set(CATALOGUE), {
+            "apt.refresh", "apt.upgrade", "apt.security", "clean.aptcache",
+        })
 
     def test_an_action_is_immutable(self):
         action = CATALOGUE["apt.refresh"]

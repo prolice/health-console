@@ -10,6 +10,7 @@ import { hasMeasurement } from "./stream.js";
 import { chartsAvailable, describeSeries, destroyIn, drawGauge,
          drawSparkline, labelChart, themeColour } from "./charts.js";
 import { fetchSeries } from "./history.js";
+import { openActionConfirmation } from "./actions.js";
 
 // Which recorded metric illustrates which finding. battery.incoherent is
 // deliberately absent: the console has just declared those readings
@@ -21,6 +22,9 @@ export const FINDING_METRIC = {
   "thermal.critical": "cpu.temp.pkg",
   "memory.pressure": "mem.available_pct",
   "battery.wear": "battery.wear_pct",
+  "storage.root_full": "disk.root.used_pct",
+  "updates.pending": "updates.pending",
+  "updates.security_pending": "updates.security",
 };
 
 const SEVERITY_COLOUR = {
@@ -139,6 +143,17 @@ function rebuildFindings(state) {
       finding.severity,
       translate(`finding.${finding.id}.title`, params),
       translate(`finding.${finding.id}.why`, params));
+    if (finding.action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-outline-secondary mt-2";
+      button.textContent = translate(`action.${finding.action}.label`);
+      button.dataset.bsToggle = "modal";
+      button.dataset.bsTarget = "#action-confirm-modal";
+      button.addEventListener("click", () =>
+        openActionConfirmation(finding.action));
+      article.querySelector(".card-body").append(button);
+    }
     host.append(article);
     attachSparkline(article, finding.id, finding.severity);
   }

@@ -1,0 +1,18 @@
+[Unit]
+Description=Health Console
+Documentation=README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=health-console
+Group=health-console
+ExecStart=/usr/local/bin/health-console --config /etc/health-console/config.toml run
+Restart=on-failure
+RestartSec=5s
+PrivateTmp=yes
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

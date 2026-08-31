@@ -30,9 +30,16 @@
   "ui.metric.cpu.temp.pkg": "Processor temperature",
   "ui.metric.mem.available": "Memory available",
   "ui.metric.mem.available_pct": "Memory free",
-  "ui.metric.mem.swap.used": "Moved to disk",
+  "ui.metric.mem.swap.used": "Swap use",
   "ui.metric.battery.charge_pct": "Battery charge",
   "ui.metric.battery.wear_pct": "Battery wear",
+  "ui.metric.disk.root.used_pct": "Disk used",
+  "ui.metric.disk.root.free": "Disk free",
+  "ui.metric.disk.apt_cache": "Package cache",
+  "ui.metric.updates.pending": "Pending updates",
+  "ui.metric.updates.security": "Security updates",
+  "ui.metric.net.rx_bps": "{iface} receive",
+  "ui.metric.net.tx_bps": "{iface} send",
 
   "ui.metric.cpu.usage.hint": "How busy the processor is right now, as a share of its full capacity. It naturally rises during heavy work and should fall back down once that work finishes.",
   "ui.metric.cpu.temp.pkg.hint": "The temperature measured by the processor's own sensor. The console raises a concern once it sits in the high 80s for a few minutes, or straight away if it climbs much higher.",
@@ -40,11 +47,17 @@
   "ui.metric.mem.swap.used.hint": "Data the computer has parked on the disk to free up memory. A small amount is normal; a large or growing figure means memory is tight.",
   "ui.metric.battery.charge_pct.hint": "The battery's current charge, as a share of a full charge — falling while unplugged, rising while it charges.",
   "ui.metric.load.1.hint": "A smoothed recent average of the work being done, waiting for a turn on the processor, or stuck waiting on the disk. A figure around the number of processor cores means the machine is busy but keeping up; if it is high while the processor itself looks idle, a slow or struggling disk is often the reason.",
+  "ui.metric.disk.root.used_pct.hint": "How full the system disk is. Past the warning zone, updates and normal application writes may start failing.",
+  "ui.metric.disk.root.free.hint": "Space still available on the system disk for updates, downloads and application data.",
+  "ui.metric.updates.pending.hint": "Software updates already known to APT from the last package-list refresh.",
 
   "ui.chart.group.cpu": "Processor",
   "ui.chart.group.thermal": "Temperature",
   "ui.chart.group.memory": "Memory",
+  "ui.chart.group.network": "Network",
   "ui.chart.group.battery": "Battery",
+  "ui.chart.group.storage": "Storage",
+  "ui.chart.group.updates": "Updates",
 
   "ui.chart.empty": "Nothing recorded over this window yet.",
   "ui.chart.depth_short": "Only {days} days of history so far. Collection began recently — this is not a fault.",
@@ -92,6 +105,15 @@
   "action.apt.refresh.label": "Refresh the list of available updates",
   "action.apt.refresh.description": "Asks your software sources which versions they now offer and updates the list kept on this computer. Nothing is installed, and no software you have is changed.",
   "action.apt.refresh.confirm": "This contacts your software sources and updates the local list of available versions. It installs nothing.",
+  "action.apt.upgrade.label": "Install pending updates",
+  "action.apt.upgrade.description": "Installs the regular updates that APT already knows about. It may change installed software but does not remove packages on its own.",
+  "action.apt.upgrade.confirm": "This installs pending package updates. It can change software on this computer.",
+  "action.apt.security.label": "Install security updates",
+  "action.apt.security.description": "Runs the unattended security updater for fixes APT marks as security updates.",
+  "action.apt.security.confirm": "This installs available security fixes. It can change software on this computer.",
+  "action.clean.aptcache.label": "Clear the package cache",
+  "action.clean.aptcache.description": "Removes downloaded package files kept after installation. Installed software is not removed.",
+  "action.clean.aptcache.confirm": "This clears downloaded package files from the local cache. Installed software is not removed.",
 
   "ui.error.action.busy": "Another action is already running. Wait for it to finish.",
   "ui.error.action.refused": "Actions can only be run from this computer.",
@@ -127,5 +149,14 @@
   "finding.battery.wear.why": "It therefore lasts less time than when new. This is normal battery ageing, but past half its capacity, replacing it becomes reasonable.",
 
   "finding.battery.incoherent.title": "Battery readings cannot be trusted",
-  "finding.battery.incoherent.why": "This computer reports impossible battery figures, which is a known flaw in some manufacturers' firmware. Rather than show you a wrong number, we show none. The battery itself is probably fine."
+  "finding.battery.incoherent.why": "This computer reports impossible battery figures, which is a known flaw in some manufacturers' firmware. Rather than show you a wrong number, we show none. The battery itself is probably fine.",
+
+  "finding.storage.root_full.title": "The system disk is getting full: {used_pct} % used",
+  "finding.storage.root_full.why": "There are {free_bytes} left. Updates and applications need free space to work normally; clearing downloaded package files is a low-risk first step.",
+
+  "finding.updates.pending.title": "{count} software updates are ready",
+  "finding.updates.pending.why": "Installing regular updates keeps applications current and fixes many small problems before they become visible.",
+
+  "finding.updates.security_pending.title": "{count} security updates are ready",
+  "finding.updates.security_pending.why": "Security fixes close known weaknesses. Installing them promptly lowers the chance that ordinary web or network activity can harm this computer."
 }

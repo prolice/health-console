@@ -89,6 +89,11 @@ test("metricUnit separates a percentage from a byte count sharing a card", () =>
   assert.equal(metricUnit("mem.swap.used"), "bytes");
 });
 
+test("metricUnit classes network throughput as bytes per second", () => {
+  assert.equal(metricUnit("net.enp0s25.rx_bps"), "bps");
+  assert.equal(metricUnit("net.enp0s25.tx_bps"), "bps");
+});
+
 test("metricUnit has no unit for an unlisted metric such as load.1", () => {
   assert.equal(metricUnit("load.1"), "");
 });

@@ -31,7 +31,17 @@ class TestRates(unittest.TestCase):
 
 class TestCollectSmoke(unittest.TestCase):
     def test_collect_returns_interfaces(self):
-        sample = network.collect()
+        counter = mock.Mock(bytes_recv=10, bytes_sent=20)
+        address = mock.Mock(address="127.0.0.1")
+        address.family.name = "AF_INET"
+        stat = mock.Mock(isup=True)
+        with mock.patch("psutil.net_io_counters",
+                        return_value={"lo": counter}), \
+             mock.patch("psutil.net_if_addrs",
+                        return_value={"lo": [address]}), \
+             mock.patch("psutil.net_if_stats",
+                        return_value={"lo": stat}):
+            sample = network.collect()
         self.assertEqual(sample["status"], "ok")
         self.assertIn("lo", sample["counters"])
 

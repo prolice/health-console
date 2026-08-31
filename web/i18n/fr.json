@@ -30,9 +30,16 @@
   "ui.metric.cpu.temp.pkg": "Température du processeur",
   "ui.metric.mem.available": "Mémoire disponible",
   "ui.metric.mem.available_pct": "Mémoire libre",
-  "ui.metric.mem.swap.used": "Déplacé sur le disque",
+  "ui.metric.mem.swap.used": "Utilisation de la mémoire tampon",
   "ui.metric.battery.charge_pct": "Charge de la batterie",
   "ui.metric.battery.wear_pct": "Usure de la batterie",
+  "ui.metric.disk.root.used_pct": "Disque utilisé",
+  "ui.metric.disk.root.free": "Espace disque libre",
+  "ui.metric.disk.apt_cache": "Cache des paquets",
+  "ui.metric.updates.pending": "Mises à jour en attente",
+  "ui.metric.updates.security": "Mises à jour de sécurité",
+  "ui.metric.net.rx_bps": "{iface} réception",
+  "ui.metric.net.tx_bps": "{iface} envoi",
 
   "ui.metric.cpu.usage.hint": "À quel point le processeur est occupé en ce moment, en part de sa capacité totale. Elle monte normalement pendant un traitement lourd et redescend une fois celui-ci terminé.",
   "ui.metric.cpu.temp.pkg.hint": "La température mesurée par le capteur du processeur lui-même. La console s'en inquiète dès qu'elle reste dans les 85 °C pendant quelques minutes, ou immédiatement si elle grimpe bien plus haut.",
@@ -40,11 +47,17 @@
   "ui.metric.mem.swap.used.hint": "Des données que l'ordinateur a rangées sur le disque pour libérer de la mémoire. Une petite quantité est normale ; un chiffre élevé ou qui augmente traduit un manque de mémoire.",
   "ui.metric.battery.charge_pct.hint": "Le niveau de charge actuel de la batterie, en part d'une charge complète : il baisse sur batterie et remonte pendant la charge.",
   "ui.metric.load.1.hint": "Une moyenne récente et lissée du travail en cours, en attente de son tour sur le processeur, ou bloqué en attente du disque. Une valeur proche du nombre de cœurs du processeur signifie que la machine est occupée mais suit le rythme ; si elle est élevée alors que le processeur lui-même semble inactif, un disque lent ou défaillant en est souvent la cause.",
+  "ui.metric.disk.root.used_pct.hint": "Le remplissage du disque système. Au-delà de la zone d'avertissement, les mises à jour et les écritures normales des applications peuvent échouer.",
+  "ui.metric.disk.root.free.hint": "L'espace encore disponible sur le disque système pour les mises à jour, les téléchargements et les données des applications.",
+  "ui.metric.updates.pending.hint": "Les mises à jour logicielles déjà connues d'APT depuis le dernier rafraîchissement de la liste des paquets.",
 
   "ui.chart.group.cpu": "Processeur",
   "ui.chart.group.thermal": "Température",
   "ui.chart.group.memory": "Mémoire",
+  "ui.chart.group.network": "Réseau",
   "ui.chart.group.battery": "Batterie",
+  "ui.chart.group.storage": "Stockage",
+  "ui.chart.group.updates": "Mises à jour",
 
   "ui.chart.empty": "Rien d'enregistré sur cette fenêtre pour l'instant.",
   "ui.chart.depth_short": "Seulement {days} jours d'historique à ce jour. La collecte a commencé récemment — ce n'est pas une panne.",
@@ -92,6 +105,15 @@
   "action.apt.refresh.label": "Actualiser la liste des mises à jour disponibles",
   "action.apt.refresh.description": "Demande aux sources de logiciels quelles versions elles proposent désormais et met à jour la liste conservée sur cet ordinateur. Aucun logiciel n'est installé, et les logiciels que vous avez ne sont pas modifiés.",
   "action.apt.refresh.confirm": "Cette action contacte vos sources de logiciels et met à jour la liste locale des versions disponibles. Elle n'installe rien.",
+  "action.apt.upgrade.label": "Installer les mises à jour en attente",
+  "action.apt.upgrade.description": "Installe les mises à jour ordinaires qu'APT connaît déjà. Elle peut modifier les logiciels installés mais ne supprime pas de paquets d'elle-même.",
+  "action.apt.upgrade.confirm": "Cette action installe les mises à jour de paquets en attente. Elle peut modifier les logiciels de cet ordinateur.",
+  "action.apt.security.label": "Installer les mises à jour de sécurité",
+  "action.apt.security.description": "Lance l'outil de mises à jour de sécurité automatiques pour les correctifs qu'APT marque comme sécurité.",
+  "action.apt.security.confirm": "Cette action installe les correctifs de sécurité disponibles. Elle peut modifier les logiciels de cet ordinateur.",
+  "action.clean.aptcache.label": "Vider le cache des paquets",
+  "action.clean.aptcache.description": "Supprime les fichiers de paquets téléchargés et conservés après installation. Les logiciels installés ne sont pas supprimés.",
+  "action.clean.aptcache.confirm": "Cette action vide le cache local des fichiers de paquets téléchargés. Les logiciels installés ne sont pas supprimés.",
 
   "ui.error.action.busy": "Une autre action est déjà en cours. Attendez qu'elle se termine.",
   "ui.error.action.refused": "Les actions ne peuvent être lancées que depuis cet ordinateur.",
@@ -127,5 +149,14 @@
   "finding.battery.wear.why": "Elle tient donc moins longtemps qu'à l'achat. C'est l'usure normale d'une batterie, mais au-delà de la moitié, son remplacement devient raisonnable.",
 
   "finding.battery.incoherent.title": "Les mesures de la batterie ne sont pas fiables",
-  "finding.battery.incoherent.why": "Cet ordinateur rapporte des valeurs de batterie impossibles, un défaut connu du micrologiciel de certains fabricants. Plutôt que de vous montrer un chiffre faux, nous n'en montrons aucun. La batterie elle-même se porte probablement bien."
+  "finding.battery.incoherent.why": "Cet ordinateur rapporte des valeurs de batterie impossibles, un défaut connu du micrologiciel de certains fabricants. Plutôt que de vous montrer un chiffre faux, nous n'en montrons aucun. La batterie elle-même se porte probablement bien.",
+
+  "finding.storage.root_full.title": "Le disque système se remplit : {used_pct} % utilisés",
+  "finding.storage.root_full.why": "Il reste {free_bytes}. Les mises à jour et les applications ont besoin d'espace libre pour fonctionner normalement ; vider les fichiers de paquets téléchargés est une première action peu risquée.",
+
+  "finding.updates.pending.title": "{count} mises à jour logicielles sont prêtes",
+  "finding.updates.pending.why": "Installer les mises à jour ordinaires garde les applications à jour et corrige beaucoup de petits problèmes avant qu'ils deviennent visibles.",
+
+  "finding.updates.security_pending.title": "{count} mises à jour de sécurité sont prêtes",
+  "finding.updates.security_pending.why": "Les correctifs de sécurité ferment des faiblesses connues. Les installer rapidement réduit le risque qu'une activité web ou réseau ordinaire nuise à cet ordinateur."
 }

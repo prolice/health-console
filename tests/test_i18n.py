@@ -33,15 +33,22 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.metric.cpu.usage", "ui.metric.load.1", "ui.metric.cpu.temp.pkg",
     "ui.metric.mem.available", "ui.metric.mem.available_pct",
     "ui.metric.mem.swap.used", "ui.metric.battery.charge_pct",
-    "ui.metric.battery.wear_pct",
+    "ui.metric.battery.wear_pct", "ui.metric.disk.root.used_pct",
+    "ui.metric.disk.root.free", "ui.metric.disk.apt_cache",
+    "ui.metric.updates.pending", "ui.metric.updates.security",
+    "ui.metric.net.rx_bps", "ui.metric.net.tx_bps",
     # Metric hints: a short, visible caption beside each Expert-mode tile
     # (never a title="" tooltip -- see web/js/expert.js's renderTiles).
     "ui.metric.cpu.usage.hint", "ui.metric.cpu.temp.pkg.hint",
     "ui.metric.mem.available.hint", "ui.metric.mem.swap.used.hint",
     "ui.metric.battery.charge_pct.hint", "ui.metric.load.1.hint",
+    "ui.metric.disk.root.used_pct.hint", "ui.metric.disk.root.free.hint",
+    "ui.metric.updates.pending.hint",
     # Chart card groups
     "ui.chart.group.cpu", "ui.chart.group.thermal",
-    "ui.chart.group.memory", "ui.chart.group.battery",
+    "ui.chart.group.memory", "ui.chart.group.network",
+    "ui.chart.group.battery", "ui.chart.group.storage",
+    "ui.chart.group.updates",
     # Chart states. Only the "short" wording exists: the depth line exists
     # to explain a short chart, and on a full window it instead named the
     # table's own depth_days -- contradicting itself across range buttons
@@ -156,7 +163,9 @@ class TestPlaceholders(unittest.TestCase):
 
 
 class TestFindingParamsAreShown(unittest.TestCase):
-    NUMERIC_FINDINGS = ("cpu.usage_high", "memory.pressure")
+    NUMERIC_FINDINGS = ("cpu.usage_high", "memory.pressure",
+                        "storage.root_full", "updates.pending",
+                        "updates.security_pending")
 
     def test_every_declared_parameter_is_interpolated_somewhere(self):
         # cpu.usage_high declared usage_pct/sustain_minutes and interpolated

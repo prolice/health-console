@@ -56,6 +56,9 @@ REQUIRED_UI_KEYS = frozenset({
     "ui.chart.empty", "ui.chart.depth_short", "ui.chart.depth_short_day",
     "ui.chart.depth_short_hours", "ui.chart.depth_short_hour",
     "ui.chart.summary", "ui.chart.unavailable",
+    # Capacity meters: a reading paired with the ceiling it is measured
+    # against, plus the Simple-mode strip that carries four of them.
+    "ui.value.of_total", "ui.simple.capacity",
     # Expert sections
     "ui.expert.overview", "ui.expert.probes", "ui.expert.raw",
     "ui.expert.probe_table.name", "ui.expert.probe_table.status",

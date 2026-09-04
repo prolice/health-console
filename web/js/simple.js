@@ -10,6 +10,7 @@ import { hasMeasurement } from "./stream.js";
 import { chartsAvailable, describeSeries, destroyIn, drawGauge,
          drawSparkline, labelChart, themeColour } from "./charts.js";
 import { fetchSeries } from "./history.js";
+import { clearCapacityStrip, renderCapacityStrip } from "./meters.js";
 import { openActionConfirmation } from "./actions.js";
 
 // Which recorded metric illustrates which finding. battery.incoherent is
@@ -188,6 +189,7 @@ function renderNoMeasurement(state) {
   setText(el("verdict-word"), translate("ui.state.no_measurement"));
   setText(el("verdict-sentence"), translate("ui.state.no_measurement.detail"));
   setText(el("score"), "—");
+  clearCapacityStrip();
   destroyIn(el("verdict-gauge").parentElement);
   lastGaugeSignature = null;
   const host = el("findings");
@@ -220,6 +222,10 @@ export function renderSimple(state) {
     drawGauge(gaugeCanvas, state.score,
               themeColour(SEVERITY_COLOUR[severity] || "--hc-info"));
   }
+
+  // Rows are built once and then written into in place, so this rides the
+  // 2s tick without tearing anything down -- see renderCapacityStrip().
+  renderCapacityStrip(state);
 
   // See findingsSignature(): rebuilding the cards (and re-fetching every
   // sparkline) is skipped whenever what they display has not changed since

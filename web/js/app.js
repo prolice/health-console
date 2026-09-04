@@ -51,6 +51,7 @@ function paintChrome() {
   paintActionsChrome();
   el("locale-label").textContent = translate("ui.language");
   el("score-label").textContent = translate("ui.score.label");
+  el("capacity-heading").textContent = translate("ui.simple.capacity");
   el("theme-group").setAttribute("aria-label", translate("ui.theme.label"));
   el("theme-auto").textContent = translate("ui.theme.auto");
   el("theme-light").textContent = translate("ui.theme.light");

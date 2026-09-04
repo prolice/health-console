@@ -205,9 +205,13 @@ class TestModuleLayout(unittest.TestCase):
         # Measured across every module, not app.js alone: app.js is now ~80
         # lines of wiring, so a single-file assertion would pass while
         # guarding nothing.
+        #
+        # 96 KiB is the third revision (60 -> 80 -> 96). meters.js and its
+        # wiring landed with 185 bytes of headroom left under 80 KiB; see the
+        # UI redesign spec, "2.2 supplement: third budget revision".
         total = sum(path.stat().st_size for path in JS.glob("*.js"))
-        self.assertLess(total, 80 * 1024,
-                        f"80 KiB budget exceeded: {total} bytes")
+        self.assertLess(total, 96 * 1024,
+                        f"96 KiB budget exceeded: {total} bytes")
 
 
 class TestChartsDegradeGracefully(unittest.TestCase):

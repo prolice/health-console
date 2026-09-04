@@ -67,7 +67,7 @@ called for hand-drawn SVG charts. Bootstrap and Chart.js together are about
 | `vendor/bootstrap.min.css` | ~230 KiB |
 | `vendor/bootstrap.bundle.min.js` | ~80 KiB |
 | `vendor/chart.umd.min.js` | ~200 KiB |
-| our own `web/js/*.js` | < 80 KiB (raised to 80 KiB: §2.2 supplement below) |
+| our own `web/js/*.js` | < 96 KiB (raised twice: §2.2 supplements below) |
 
 The constraint that survives is the one with teeth: **no network access at
 runtime, ever.** These files are read from disk, on a machine that already
@@ -98,6 +98,28 @@ interactive, multi-modal dashboard — justifies raising the ceiling to 80 KiB.
 The constraint's purpose remains unchanged: keep the code we write small next to
 a tool that ships a multi-megabyte SQLite database, and keep vendored libraries
 outside the budget so they cannot hide behind our own footprint.
+
+#### 2.2 supplement: third budget revision (96 KiB)
+
+Capacity meters (`meters.js`, 2026-09-04) added a ninth module and pushed the
+total to about 89 KiB. The 80 KiB ceiling had 185 bytes of headroom left before
+it, so this was not a case of gradual drift: the first feature to arrive after
+the redesign settled could not fit, whatever its size.
+
+The feature is not optional padding. A reading without its ceiling is half a
+sentence — "0 B of swap in use" reads identically on a machine with a 4 GiB
+swap file and on one with no swap at all, which is the reader-facing bug that
+prompted the work. Pairing every capacity reading with its total, in both
+views, is what the module buys.
+
+Trimming was tried first and does not reach: the module is about 6 KiB of
+logic under this repository's comment density, and the gap is 9.5 KiB. Closing
+it would mean stripping explanatory comments from modules unrelated to this
+change — trading the thing the budget protects (code a reader can follow) for
+the number that measures it.
+
+96 KiB restores roughly the headroom 80 KiB had when it was set. The purpose is
+unchanged, and so is the rule that vendored libraries stay outside it.
 
 ## 3. Layout
 

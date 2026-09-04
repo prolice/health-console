@@ -17,6 +17,11 @@
   --hc-series-2: #6a3f9e;
   --hc-series-3: #b2650f;
   --hc-series-4: #b23a6b;
+  /* Capacity meters. The fill is deliberately outside the severity palette
+     and outside the series palette: a neutral bar means "here is a
+     proportion", and only a finding from the server may repaint it. */
+  --hc-meter-track: rgba(0, 0, 0, 0.10);
+  --hc-meter-fill: #55606b;
 }
 
 :root[data-bs-theme="dark"] {
@@ -29,6 +34,8 @@
   --hc-series-2: #b79ae0;
   --hc-series-3: #e0a865;
   --hc-series-4: #e08fb0;
+  --hc-meter-track: rgba(255, 255, 255, 0.14);
+  --hc-meter-fill: #9aa7b4;
 }
 
 .bar {
@@ -82,6 +89,85 @@ body.stale .view { opacity: 0.45; }
 #action-output {
   max-height: 260px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-word;
+}
+
+/* Capacity meters: a track and a fill, never a canvas. Chart.js sizes itself
+   from whatever box it sits in -- the trap that once inflated the verdict
+   gauge to 700px -- so a bar whose height is fixed here cannot repeat it,
+   however wide the card around it becomes. */
+/* One grid for the whole strip, not one per row: with a grid per row the
+   third column sized to that row's own text, so every bar ended at a
+   different x and the four right edges came out ragged. `display: contents`
+   lets the rows' cells share the strip's tracks and line up. */
+#capacity-strip {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  gap: 0.65rem 0.75rem;
+  align-items: center;
+}
+
+.meter-row { display: contents; }
+
+.meter-label { font-size: 0.875rem; }
+.meter-value {
+  font-size: 0.875rem;
+  /* Digits of equal width, so a bar's number does not jitter sideways on
+     every 2s tick while the bar beside it barely moves. */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.meter {
+  height: 10px;
+  min-width: 0;
+  border-radius: 5px;
+  background: var(--hc-meter-track);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--hc-meter-fill);
+  transition: width 0.3s ease;
+}
+
+/* Borrowed from the server's findings, never from a threshold of this
+   page's own -- see meters.js's meterSeverity(). */
+.meter-fill.is-INFO      { background: var(--hc-info); }
+.meter-fill.is-ATTENTION { background: var(--hc-attention); }
+.meter-fill.is-URGENT    { background: var(--hc-urgent); }
+
+/* The Expert tiles carry the same bar under their reading. */
+.meter-tile { margin-top: 0.5rem; }
+
+/* Below this the three columns leave the bar a sliver: the label and the
+   value keep one line and the bar takes the next, full width.
+   40rem, not a Bootstrap tier: the trigger is the longest label. French's
+   "Mémoire d'échange utilisée" measures 181px, and with the value column
+   beside it the bar was down to 131px at a 520px window -- a proportion too
+   short to read as one. The threshold is set from that measurement. */
+@media (max-width: 40rem) {
+  /* align-items must be reset, not just left alone: the rule above sets
+     `center`, which in a column flex container sizes each row to its own
+     content and centres it -- the rows came out 227px wide in a 434px card. */
+  #capacity-strip {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+  .meter-row {
+    display: grid;
+    grid-template-columns: 1fr max-content;
+    gap: 0.3rem 0.75rem;
+    align-items: center;
+  }
+  .meter-label { grid-area: 1 / 1; }
+  .meter-value { grid-area: 1 / 2; }
+  .meter { grid-area: 2 / 1 / 3 / 3; }
 }
 
 .chart-holder { position: relative; height: 200px; }

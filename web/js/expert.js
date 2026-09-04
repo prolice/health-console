@@ -17,6 +17,8 @@ import { RANGES, fetchSeries } from "./history.js";
 import { chartsAvailable, drawLine, describeSeries, labelChart,
          themeColour, destroyIn, metricLabel } from "./charts.js";
 import { lastKnownState } from "./stream.js";
+import { METERS, meterBar, meterSeverity, meterValueText, paintBar,
+         readMeter } from "./meters.js";
 
 const DEFAULT_RANGE = "24h";
 let range = DEFAULT_RANGE;
@@ -240,7 +242,17 @@ export function renderTiles(state) {
     label.textContent = metricLabel(metric);
     const reading = document.createElement("p");
     reading.className = "h5 mb-0";
-    reading.textContent = value == null ? "—" : format(value);
+    // A tile with a capacity meter behind it shows the pair, not the value
+    // alone: "3.4 GB" alone never said 3.4 GB out of what, and "0 B" of swap
+    // read the same on a machine with a 4 GB swap file and on one with none.
+    // Percentages are left as they were -- "/ 100 %" adds nothing.
+    const meter = METERS.find((candidate) => candidate.id === metric);
+    const meterReading = meter ? readMeter(meter, probes) : null;
+    reading.textContent = value == null
+      ? "—"
+      : (meterReading && meterReading.unit === "bytes"
+          ? meterValueText(meterReading)
+          : format(value));
     head.append(label, reading);
     const hint = document.createElement("p");
     // A caption, not a tooltip: a title="" attribute would vanish for a
@@ -250,7 +262,18 @@ export function renderTiles(state) {
     // a tooltip and hiding this at any width.
     hint.className = "small text-body-secondary mt-1 mb-0";
     hint.textContent = translate(`ui.metric.${metric}.hint`);
-    body.append(head, hint);
+    body.append(head);
+    if (meterReading) {
+      const track = meterBar();
+      track.classList.add("meter-tile");
+      paintBar(track, meterReading,
+               meterSeverity(meter, state && state.findings),
+               metricLabel(metric));
+      // Hidden means there is no share to draw (a capacity of zero); the
+      // pair above already carries that, so no empty track is appended.
+      if (!track.hidden) body.append(track);
+    }
+    body.append(hint);
     card.append(body);
     column.append(card);
     row.append(column);
